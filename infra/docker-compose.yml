@@ -15,7 +15,9 @@
 #
 # All exporters use `network_mode: host` so classe's central Prometheus
 # can scrape `<host-ip>:<port>` directly over LAN. Ports used:
-#   9100 node-exporter, 9290 ipmi-exporter, 9633 smartctl-exporter, 8080 cadvisor.
+#   9100 node-exporter, 9290 ipmi-exporter, 9633 smartctl-exporter, 8089 cadvisor.
+# cadvisor uses 8089 (not its default 8080) because unifi-os-server claims
+# 8080 on classe and host-agent must coexist on the same host network.
 # The dell-fans controller stays on the default bridge — it only talks
 # to /dev/ipmi0, not the network.
 #
@@ -71,6 +73,7 @@ services:
     privileged: true
     network_mode: host
     command:
+      - "--port=8089"
       - "--docker_only=true"
       - "--store_container_labels=true"
       - "--housekeeping_interval=30s"
