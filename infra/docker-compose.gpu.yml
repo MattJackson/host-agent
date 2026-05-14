@@ -1,0 +1,33 @@
+# GPU overlay — applied automatically by deploy.sh when nvidia-smi is on
+# the host. Two things happen:
+#   1) dell-fans gets the NVIDIA Container Runtime so its loop can query
+#      nvidia-smi (passive-GPU PID, active-GPU assist).
+#   2) nvidia-gpu-exporter joins the stack to surface GPU temp/util/mem/
+#      power metrics to the central Prometheus.
+#
+# Hosts without a GPU skip this overlay entirely; the rest of the stack
+# (dell-fans CPU-only mode + node/cadvisor/ipmi/smartctl exporters) is
+# unaffected.
+services:
+  dell-fans:
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=utility
+
+  nvidia-gpu-exporter:
+    image: utkuozdemir/nvidia_gpu_exporter:1.4.1
+    container_name: host-agent-nvidia-gpu-exporter
+    restart: unless-stopped
+    runtime: nvidia
+    network_mode: host
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=utility
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128m
