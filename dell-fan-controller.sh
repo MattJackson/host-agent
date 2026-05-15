@@ -448,18 +448,24 @@ run_pid() {
     fi
 
     if [ "$error" -le 0 ] && [ "$abs_error" -le "$deadband" ]; then
-        # At or below target, in deadband: trickle toward base_speed.
-        local int_base
-        int_base=$(printf "%.0f" "$base_speed")
-        int_base=$(clamp "$int_base" "$MIN_FAN" "$MAX_FAN")
-        local cand=$current_speed
-        if [ "$current_speed" -gt "$int_base" ]; then
-            cand=$(( current_speed - DEADBAND_DRIFT_RATE ))
-            [ "$cand" -lt "$int_base" ] && cand=$int_base
-        elif [ "$current_speed" -lt "$int_base" ]; then
-            cand=$(( current_speed + DEADBAND_DRIFT_RATE ))
-            [ "$cand" -gt "$int_base" ] && cand=$int_base
-        fi
+        # At or below target, in deadband: slowly drift down toward
+        # MIN_FAN. This class has no thermal pressure to add fans, so
+        # let them get quieter. If temps actually need more airflow,
+        # they'll cross the deadband upper edge and the PID step will
+        # catch the rise.
+        #
+        # Previously drifted toward base_speed (the EWMA equilibrium).
+        # That created a stuck-at-base trap: when current_speed equals
+        # base_speed, EWMA can't move base down (delta is zero), and
+        # this class keeps voting candidate=base into max(). Every
+        # box would settle at whatever its historical busy average
+        # was — including periods elevated by bugs upstream — and
+        # never get quieter even when nothing was hot. By drifting
+        # toward MIN_FAN here, current_speed can fall below base,
+        # which gives the EWMA a non-zero delta and lets base adapt
+        # down to the chassis's actual cool-state equilibrium.
+        local cand=$(( current_speed - DEADBAND_DRIFT_RATE ))
+        [ "$cand" -lt "$MIN_FAN" ] && cand=$MIN_FAN
         echo "$cand"
         return
     fi
