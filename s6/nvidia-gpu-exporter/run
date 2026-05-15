@@ -1,0 +1,13 @@
+#!/usr/bin/env sh
+# nvidia-smi is injected by NVIDIA Container Runtime when the host runs
+# with `runtime: nvidia`. Absent on non-GPU hosts and on GPU hosts that
+# didn't set the runtime — graceful skip in both cases.
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+  echo "[nvidia-gpu-exporter] nvidia-smi not present — disabled"
+  exec sleep infinity
+fi
+if ! nvidia-smi -L >/dev/null 2>&1; then
+  echo "[nvidia-gpu-exporter] nvidia-smi -L failed — disabled"
+  exec sleep infinity
+fi
+exec /usr/local/bin/nvidia_gpu_exporter --web.listen-address=:9835

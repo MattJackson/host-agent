@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# smartctl_exporter auto-discovers drives. On hosts with no drives it
+# starts and reports nothing — harmless. No probe needed.
+exec /usr/local/bin/smartctl_exporter --web.listen-address=:9633

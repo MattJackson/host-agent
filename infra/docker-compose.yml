@@ -1,138 +1,34 @@
-# host-agent: per-host bundle that BOTH controls Dell chassis fans AND
-# exposes Prometheus metrics for the central monitoring stack to scrape.
+# host-agent — one container, s6-supervised, bundles the Dell fan
+# controller + Prometheus exporters (node, cadvisor, ipmi, smartctl,
+# nvidia-gpu). Each sub-process probes its hardware on start and
+# `sleep infinity` if absent, so the same image drops onto any Linux
+# Docker host (classe, docker-2, Unraid, future Dell boxes) unchanged.
 #
-# Five services in one compose, deployed identically on every Dell host:
+# After a host has this compose in place, all future updates flow via
+# watchtower bumping the image tag — no further per-host action.
 #
-#   dell-fans         — adaptive fan controller (was its own stack until
-#                       2026-05-14). Writes Prom textfile metrics to
-#                       /var/lib/dell-fans/state/metrics.prom each cycle.
-#   node-exporter     — host CPU/mem/disk/net + reads dell-fans' textfile
-#                       via --collector.textfile.directory.
-#   cadvisor          — per-container CPU/mem/network/io.
-#   ipmi-exporter     — chassis IPMI sensors (temps, fans, power).
-#   smartctl-exporter — per-drive SMART (temps, health). Works on PERC
-#                       megaraid (classe) AND plain SATA (docker-2).
-#
-# All exporters use `network_mode: host` so classe's central Prometheus
-# can scrape `<host-ip>:<port>` directly over LAN. Ports used:
-#   9100 node-exporter, 9290 ipmi-exporter, 9633 smartctl-exporter, 8089 cadvisor.
-# cadvisor uses 8089 (not its default 8080) because unifi-os-server claims
-# 8080 on classe and host-agent must coexist on the same host network.
-# The dell-fans controller stays on the default bridge — it only talks
-# to /dev/ipmi0, not the network.
-#
-# /var/lib/dell-fans/state retains its historical name (controller state
-# + textfile output) even though it lives under the host-agent stack now.
-# Renaming would lose the EWMA baseline; not worth it.
+# GPU hosts: set HOST_AGENT_RUNTIME=nvidia in the environment (e.g. via
+# infra/.env) and the NVIDIA Container Runtime will inject nvidia-smi
+# at start, enabling the nvidia-gpu-exporter sub-service. Default is
+# runc — harmless on hosts without nvidia-container-toolkit.
 services:
-  dell-fans:
-    image: registry.docker.pq.io/dell-fans:latest
-    container_name: host-agent-dell-fans
+  host-agent:
+    image: registry.docker.pq.io/host-agent:latest
+    container_name: host-agent
     restart: unless-stopped
     privileged: true
-    devices:
-      - /dev/ipmi0:/dev/ipmi0
-    volumes:
-      - /sys:/sys:ro
-      - /dev:/dev
-      - /var/lib/dell-fans:/var/lib/dell-fans
-    environment:
-      - GPU_AWARE=auto
-      - HDD_AWARE=auto
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
-
-  node-exporter:
-    image: prom/node-exporter:latest
-    container_name: host-agent-node-exporter
-    restart: unless-stopped
     network_mode: host
     pid: host
-    command:
-      - "--path.rootfs=/host"
-      - "--path.procfs=/host/proc"
-      - "--path.sysfs=/host/sys"
-      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
-      - "--collector.textfile.directory=/host-metrics"
+    runtime: ${HOST_AGENT_RUNTIME:-runc}
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=utility
     volumes:
       - /:/host:ro,rslave
-      # dell-fans writes Prom textfile output here every loop iteration.
-      - /var/lib/dell-fans/state:/host-metrics:ro
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 64m
-
-  cadvisor:
-    image: gcr.io/cadvisor/cadvisor:latest
-    container_name: host-agent-cadvisor
-    restart: unless-stopped
-    privileged: true
-    network_mode: host
-    command:
-      - "--port=8089"
-      - "--docker_only=true"
-      - "--store_container_labels=true"
-      - "--housekeeping_interval=30s"
-      - "--max_housekeeping_interval=60s"
-      - "--disable_metrics=referenced_memory,tcp,udp,advtcp,process,hugetlb,resctrl"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /run/containerd/containerd.sock:/run/containerd/containerd.sock:ro
-      - /:/rootfs:ro
       - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
-      - /dev/disk:/dev/disk:ro
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
-    deploy:
-      resources:
-        limits:
-          cpus: "1"
-          memory: 2g
-
-  ipmi-exporter:
-    image: prometheuscommunity/ipmi-exporter:latest
-    container_name: host-agent-ipmi-exporter
-    restart: unless-stopped
-    user: root
-    privileged: true
-    network_mode: host
-    devices:
-      - /dev/ipmi0:/dev/ipmi0
-    volumes:
-      - ipmi_cache:/root/.freeipmi
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
-    deploy:
-      resources:
-        limits:
-          cpus: "0.25"
-          memory: 256m
-
-  # SMART exporter — auto-discovers PERC megaraid pass-through on classe
-  # AND plain SATA devices on docker-2. /dev bind covers both cases without
-  # per-host overlay. On hosts with no exposed drives the exporter starts
-  # and reports no devices; harmless.
-  smartctl-exporter:
-    image: prometheuscommunity/smartctl-exporter:latest
-    container_name: host-agent-smartctl-exporter
-    restart: unless-stopped
-    user: root
-    privileged: true
-    network_mode: host
-    volumes:
       - /dev:/dev
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /var/lib/dell-fans:/var/lib/dell-fans
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-    deploy:
-      resources:
-        limits:
-          cpus: "0.25"
-          memory: 128m
-
-volumes:
-  ipmi_cache:

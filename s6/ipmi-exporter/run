@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+if [ ! -c /dev/ipmi0 ]; then
+  echo "[ipmi-exporter] /dev/ipmi0 absent — ipmi-exporter disabled"
+  exec sleep infinity
+fi
+exec /usr/local/bin/ipmi_exporter --web.listen-address=:9290

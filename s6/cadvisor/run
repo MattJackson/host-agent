@@ -1,0 +1,16 @@
+#!/usr/bin/env sh
+# cadvisor needs the Docker socket. Skip if the host didn't mount it
+# (rare, but keeps the image portable to hosts that don't want it).
+if [ ! -S /var/run/docker.sock ]; then
+  echo "[cadvisor] /var/run/docker.sock not mounted — cadvisor disabled"
+  exec sleep infinity
+fi
+# Port 8089 (not 8080) to avoid colliding with apps that commonly bind
+# 8080 on host network (e.g. unifi-os).
+exec /usr/local/bin/cadvisor \
+  --port=8089 \
+  --docker_only=true \
+  --store_container_labels=true \
+  --housekeeping_interval=30s \
+  --max_housekeeping_interval=60s \
+  --disable_metrics=referenced_memory,tcp,udp,advtcp,process,hugetlb,resctrl
