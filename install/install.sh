@@ -48,6 +48,7 @@ docker run -d \
   --network host \
   --label com.centurylinklabs.watchtower.enable=true \
   -v /:/host:ro,rslave \
+  -v /sys:/sys:ro \
   -v /dev:/dev \
   -v "$STATE_DIR":/var/lib/dell-fans \
   "$IMAGE"

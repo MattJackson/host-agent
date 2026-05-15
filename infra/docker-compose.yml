@@ -26,14 +26,20 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=utility
-    # Minimum viable mount set. Everything else (/sys, /var/run/docker.sock,
-    # /var/lib/docker) is reachable transitively via /host/... — node-exporter
-    # already uses /host/proc + /host/sys, and cadvisor's run script falls
-    # back to /host/var/run/docker.sock + /host/var/lib/docker when those
-    # aren't bound directly. /dev stays explicit because --privileged doesn't
-    # auto-import host devices and ipmitool / smartctl hardcode /dev/* paths.
+    # Mount set:
+    #   /:/host:ro,rslave        — node-exporter rootfs/procfs view
+    #   /sys:/sys:ro             — cadvisor reads /sys/fs/cgroup directly; even
+    #                              with --privileged the container still has its
+    #                              own cgroup namespace, so we hand it the host's
+    #                              /sys. Without this, cadvisor sees no containers.
+    #   /dev:/dev                — ipmitool + smartctl hardcode /dev/* paths and
+    #                              Docker doesn't auto-import host devices.
+    #   /var/lib/dell-fans       — fan EWMA baseline + vmagent WAL persistence.
+    # docker.sock + /var/lib/docker are reachable via /host/var/run/...,
+    # cadvisor's run script picks them up there — no explicit mount needed.
     volumes:
       - /:/host:ro,rslave
+      - /sys:/sys:ro
       - /dev:/dev
       - /var/lib/dell-fans:/var/lib/dell-fans
     labels:
