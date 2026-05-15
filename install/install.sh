@@ -49,7 +49,8 @@ docker run -d \
   --label com.centurylinklabs.watchtower.enable=true \
   -v /:/host:ro,rslave \
   -v /sys:/sys:ro \
-  -v /run:/run \
+  -v /run/docker.sock:/run/docker.sock \
+  -v /run/containerd:/run/containerd:ro \
   -v /var/lib/docker:/var/lib/docker:ro \
   -v /dev:/dev \
   -v "$STATE_DIR":/var/lib/dell-fans \

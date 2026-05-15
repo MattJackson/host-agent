@@ -44,9 +44,12 @@ services:
     volumes:
       - /:/host:ro,rslave
       - /sys:/sys:ro
-      # /run must be rw — NVIDIA Container Runtime's ldcache hook writes
-      # a scratch dir at /run/nvidia-ctk-hook during container init.
-      - /run:/run
+      # cadvisor needs two specific sockets at their hardcoded paths.
+      # Binding the whole host /run over the container's /run breaks
+      # s6-overlay (it writes its own bootstrap state there). So bind
+      # just the two files we actually need.
+      - /run/docker.sock:/run/docker.sock
+      - /run/containerd:/run/containerd:ro
       - /var/lib/docker:/var/lib/docker:ro
       - /dev:/dev
       - /var/lib/dell-fans:/var/lib/dell-fans
