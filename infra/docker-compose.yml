@@ -44,7 +44,9 @@ services:
     volumes:
       - /:/host:ro,rslave
       - /sys:/sys:ro
-      - /run:/run:ro
+      # /run must be rw — NVIDIA Container Runtime's ldcache hook writes
+      # a scratch dir at /run/nvidia-ctk-hook during container init.
+      - /run:/run
       - /var/lib/docker:/var/lib/docker:ro
       - /dev:/dev
       - /var/lib/dell-fans:/var/lib/dell-fans

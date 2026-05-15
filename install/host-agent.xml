@@ -42,7 +42,7 @@
 
   <Config Name="Host sysfs" Target="/sys" Default="/sys" Mode="ro" Description="Direct passthrough of /sys (read-only) so cadvisor can read /sys/fs/cgroup and enumerate Docker containers. --privileged alone is not enough — Docker still gives the container its own cgroup namespace. Leave the default." Type="Path" Display="advanced-hide" Required="true" Mask="false">/sys</Config>
 
-  <Config Name="Host runtime sockets" Target="/run" Default="/run" Mode="ro" Description="Host /run gives cadvisor both /run/docker.sock and /run/containerd/containerd.sock at the paths it expects internally. Without this, cadvisor reports zero containers. Leave the default." Type="Path" Display="advanced-hide" Required="true" Mask="false">/run</Config>
+  <Config Name="Host runtime sockets" Target="/run" Default="/run" Mode="rw" Description="Host /run gives cadvisor both /run/docker.sock and /run/containerd/containerd.sock at the paths it expects internally. Must be rw — NVIDIA Container Runtime writes a scratch dir under /run on container init. Leave the default." Type="Path" Display="advanced-hide" Required="true" Mask="false">/run</Config>
 
   <Config Name="Docker root" Target="/var/lib/docker" Default="/var/lib/docker" Mode="ro" Description="cadvisor reads per-container metadata from /var/lib/docker. Leave the default." Type="Path" Display="advanced-hide" Required="true" Mask="false">/var/lib/docker</Config>
 
