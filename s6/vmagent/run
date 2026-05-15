@@ -8,15 +8,69 @@
 #
 # remote_write URL is HARDCODED. To change it, build + release a new
 # image. New host = run the container; nothing else.
+#
+# Per-chassis sensor normalization: each chassis has its own IPMI
+# sensor naming (R730: "Temp" id 26/27 for CPUs; R410: "Ambient Temp"
+# id 14 for inlet; etc.). We detect the chassis via dmidecode and
+# emit metric_relabel_configs that stamp a stable `class` label
+# (cpu1/cpu2/inlet/exhaust) onto whichever sensor matches on this box,
+# so the dashboard can query {class="cpu1"} regardless of chassis.
 
 REMOTE_WRITE_URL="http://docker-1.internal.pq.io:9090/api/v1/write"
 HOSTNAME_LABEL="$(hostname -s)"
-# WAL lives in /var/lib/dell-fans (legacy mount name — that volume is
-# already bound through the existing compose/run; renamed to
-# /var/lib/host-agent in a later cleanup).
 WAL_DIR=/var/lib/dell-fans/vmagent-wal
 
 mkdir -p "$WAL_DIR"
+
+CHASSIS=$(dmidecode -s system-product-name 2>/dev/null | tr -d '\n' || echo unknown)
+echo "[vmagent] chassis detected: ${CHASSIS}"
+
+# Build per-chassis IPMI metric_relabel rules. Add cases here as new
+# hardware is added to the fleet; the dashboard never has to change.
+case "$CHASSIS" in
+  *R730*|*XC730*)
+    IPMI_RELABEL='      - source_labels: [__name__, name, id]
+        regex: "ipmi_temperature_celsius;Temp;26"
+        target_label: class
+        replacement: cpu1
+      - source_labels: [__name__, name, id]
+        regex: "ipmi_temperature_celsius;Temp;27"
+        target_label: class
+        replacement: cpu2
+      - source_labels: [__name__, name]
+        regex: "ipmi_temperature_celsius;Inlet Temp"
+        target_label: class
+        replacement: inlet
+      - source_labels: [__name__, name]
+        regex: "ipmi_temperature_celsius;Exhaust Temp"
+        target_label: class
+        replacement: exhaust'
+    ;;
+  *R410*)
+    # R410 BMC only exposes a single ambient temp (id=14). No per-CPU
+    # IPMI sensors and no exhaust sensor — CPU temps come from
+    # coretemp via node_hwmon below.
+    IPMI_RELABEL='      - source_labels: [__name__, name, id]
+        regex: "ipmi_temperature_celsius;Ambient Temp;14"
+        target_label: class
+        replacement: inlet'
+    ;;
+  *)
+    IPMI_RELABEL='      # no chassis-specific IPMI sensor map for "'"${CHASSIS}"'"; dashboard CPU tiles fall back to coretemp'
+    ;;
+esac
+
+# Universal coretemp -> class mapping. node_hwmon_temp_celsius reports
+# every core; the dashboard takes max() per chip, so labeling the
+# whole socket is enough.
+NODE_RELABEL='      - source_labels: [__name__, chip]
+        regex: "node_hwmon_temp_celsius;platform_coretemp_0"
+        target_label: class
+        replacement: cpu1
+      - source_labels: [__name__, chip]
+        regex: "node_hwmon_temp_celsius;platform_coretemp_1"
+        target_label: class
+        replacement: cpu2'
 
 cat > /run/vmagent.yml <<EOF
 global:
@@ -29,6 +83,8 @@ scrape_configs:
   - job_name: node
     static_configs:
       - targets: ["localhost:9100"]
+    metric_relabel_configs:
+${NODE_RELABEL}
 
   - job_name: cadvisor
     static_configs:
@@ -39,6 +95,8 @@ scrape_configs:
     scrape_timeout: 20s
     static_configs:
       - targets: ["localhost:9290"]
+    metric_relabel_configs:
+${IPMI_RELABEL}
 
   - job_name: smartctl
     scrape_interval: 60s
