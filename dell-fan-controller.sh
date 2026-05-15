@@ -418,13 +418,23 @@ ewma() {
 # a heat-soaked chassis stays loud until it actually cools to target,
 # not just until temp stops climbing.
 #
-# A class with no reading (temp <= 0) abstains by returning the current
-# fan speed — a no-op in the max().
+# A class with no reading (temp <= 0) abstains. Returning 0 means it
+# contributes nothing to max() so other classes (and the proximity
+# floors) drive the answer; if every class abstains, max() falls to 0
+# and clamp(0, MIN_FAN, MAX_FAN) settles at MIN_FAN.
+#
+# Critical: do NOT return current_speed here. Doing so locks fans at
+# the highest speed they've ever been the moment any sensor briefly
+# fails — every absent class becomes a "binding" vote into max() equal
+# to the current setpoint, so fans can never drop. Bug surfaced
+# 2026-05-15 when the nvidia runtime injection regressed on classe and
+# the GPU classes briefly read 0; fans stayed pinned at the pre-outage
+# setpoint until the controller was restarted.
 run_pid() {
     local temp=$1 target=$2 deadband=$3 last=$4
 
     if [ "$temp" -le 0 ]; then
-        echo "$current_speed"
+        echo 0
         return
     fi
 
@@ -685,7 +695,12 @@ while true; do
     # Per-class proximity floors. Each class has its own APPROACH_WINDOW
     # so a class operating closer to its limits (HDDs near 50°C) doesn't
     # need to share the 10°C ramp distance that suits a CPU near 80°C.
-    cpu_pf=$(proximity_floor "$CPU_MAX" "$CPU_EMERGENCY" "$CPU_APPROACH_WINDOW")
+    # Each class gates on >0 so absent readings produce 0 (abstain),
+    # not MIN_FAN (which would falsely bind the max() at MIN_FAN every
+    # cycle and prevent the clamp at the bottom from being the single
+    # source of truth for the floor).
+    cpu_pf=0
+    [ "$CPU_MAX" -gt 0 ] && cpu_pf=$(proximity_floor "$CPU_MAX" "$CPU_EMERGENCY" "$CPU_APPROACH_WINDOW")
     pg_pf=0
     [ "$PASSIVE_GPU_MAX" -gt 0 ] && pg_pf=$(proximity_floor "$PASSIVE_GPU_MAX" "$GPU_EMERGENCY" "$GPU_APPROACH_WINDOW")
     ag_pf=0
