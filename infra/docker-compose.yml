@@ -18,6 +18,9 @@ services:
     restart: unless-stopped
     privileged: true
     network_mode: host
+    # Host cgroup namespace — without this, cadvisor reads its own
+    # cgroup tree (just /), not the host's, even with /sys mounted.
+    cgroup: host
     # pid: host omitted — s6-overlay requires PID 1, and the host
     # metrics we display (CPU, mem, disk, net, load, textfile) don't
     # need host PID visibility. Sub-services that ask for it (cadvisor)

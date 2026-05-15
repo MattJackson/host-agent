@@ -30,7 +30,7 @@
   <WebUI/>
   <TemplateURL/>
   <Icon>https://raw.githubusercontent.com/prometheus/docs/main/static/prometheus-logo-orange.svg</Icon>
-  <ExtraParams>--restart=unless-stopped</ExtraParams>
+  <ExtraParams>--restart=unless-stopped --cgroupns=host</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DateInstalled/>

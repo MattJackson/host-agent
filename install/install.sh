@@ -46,6 +46,7 @@ docker run -d \
   --restart unless-stopped \
   --privileged \
   --network host \
+  --cgroupns host \
   --label com.centurylinklabs.watchtower.enable=true \
   -v /:/host:ro,rslave \
   -v /sys:/sys:ro \
