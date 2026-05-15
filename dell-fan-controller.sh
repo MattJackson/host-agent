@@ -755,6 +755,8 @@ while true; do
     [ "$ACTIVE_GPU_MAX" -gt 0 ] && ag_pf=$(proximity_floor "$ACTIVE_GPU_MAX" "$ACTIVE_GPU_EMERGENCY" "$ACTIVE_GPU_APPROACH_WINDOW")
     hdd_pf=0
     [ "$HDD_MAX" -gt 0 ] && hdd_pf=$(proximity_floor "$HDD_MAX" "$HDD_EMERGENCY" "$HDD_APPROACH_WINDOW")
+    ssd_pf=0
+    [ "$SSD_MAX" -gt 0 ] && ssd_pf=$(proximity_floor "$SSD_MAX" "$SSD_EMERGENCY" "$SSD_APPROACH_WINDOW")
 
     # Active-GPU assist: chassis fans can't cool an active GPU's die,
     # but they can lower the air the GPU's own fan pulls in. When the
