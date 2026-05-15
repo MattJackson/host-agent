@@ -25,30 +25,12 @@ HOSTNAME_LABEL="$(hostname -s)"
 WAL_DIR=/var/lib/dell-fans/vmagent-wal
 PROFILE_DIR=/etc/dell-fans/profiles
 
-# Image build version (short git SHA, written at build time). Exposed
-# as a SINGLE info metric via node-exporter's textfile collector — NOT
-# as a vmagent external_label. Stamping it onto every sample bloats
-# cardinality and makes every dashboard panel show duplicate series
-# across image upgrades until old samples age out.
+# Image build version (short git SHA, written at build time).
 VERSION_LABEL="$(cat /etc/host-agent-version 2>/dev/null || echo dev)"
 
-# Write the version info file every start so node-exporter's textfile
-# collector picks it up as `host_agent_info{version="..."} 1`. State
-# dir is already mounted at /var/lib/dell-fans/state via the standard
-# mount; node-exporter reads textfiles from there.
-TEXTFILE_DIR=/var/lib/dell-fans/state
-mkdir -p "$TEXTFILE_DIR"
-cat > "$TEXTFILE_DIR/.host_agent_info.prom.tmp" <<EOF
-# HELP host_agent_info Build version + detected chassis profile for the host-agent container.
-# TYPE host_agent_info gauge
-host_agent_info{version="${VERSION_LABEL}",chassis="${MODEL:-unknown}",profile="${PROFILE_FILE##*/}"} 1
-EOF
-mv "$TEXTFILE_DIR/.host_agent_info.prom.tmp" "$TEXTFILE_DIR/host_agent_info.prom"
-
-mkdir -p "$WAL_DIR"
-
 # detect_model: matches dell-fan-controller.sh#detect_model exactly so
-# vmagent loads the same profile the fan controller does.
+# vmagent loads the same profile the fan controller does. Must run
+# BEFORE the host_agent_info write so MODEL/PROFILE_FILE are populated.
 detect_model() {
   raw=$(cat /sys/class/dmi/id/product_name 2>/dev/null | tr -d '\n')
   [ -z "$raw" ] && { echo unknown; return; }
@@ -67,6 +49,20 @@ else
 fi
 # Default profile fills any unset SENSOR_* + fan-tuning vars.
 set -a; . "$PROFILE_DIR/default.env"; set +a
+
+# Write host_agent_info textfile NOW that MODEL/PROFILE_FILE are known.
+# node-exporter's textfile collector picks it up as
+# host_agent_info{version,chassis,profile} = 1.
+TEXTFILE_DIR=/var/lib/dell-fans/state
+mkdir -p "$TEXTFILE_DIR"
+cat > "$TEXTFILE_DIR/.host_agent_info.prom.tmp" <<EOF
+# HELP host_agent_info Build version + detected chassis profile for the host-agent container.
+# TYPE host_agent_info gauge
+host_agent_info{version="${VERSION_LABEL}",chassis="${MODEL:-unknown}",profile="${PROFILE_FILE##*/}"} 1
+EOF
+mv "$TEXTFILE_DIR/.host_agent_info.prom.tmp" "$TEXTFILE_DIR/host_agent_info.prom"
+
+mkdir -p "$WAL_DIR"
 
 # build_ipmi_rule: emit one metric_relabel_configs entry. Empty NAME
 # means "this chassis doesn't expose that class via IPMI" -> skip.
