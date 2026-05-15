@@ -1,0 +1,11 @@
+smartctl 7.3 2022-02-28 r5338 [x86_64-linux-6.1.0-17-amd64] (local build)
+Copyright (C) 2002-22, Bruce Allen, Christian Franke, www.smartmontools.org
+
+=== START OF INFORMATION SECTION ===
+Device Model:     Samsung SSD 860 EVO 250GB
+Serial Number:    S3YJNX0M123456
+LU WWN Device Id: 5 002538 ef0123456
+Firmware Version: RVT04B6Q
+User Capacity:    250,059,350,016 bytes [250 GB]
+Rotation Rate:    Solid State Device
+Form Factor:      2.5 inches

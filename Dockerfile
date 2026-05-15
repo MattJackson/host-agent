@@ -19,6 +19,24 @@
 #   - GNU grep -P used by the fan controller
 #   - glibc — nvidia-smi from NVIDIA Container Runtime is glibc-linked
 
+# -------- go-builder: compile the Go v2 fan controller --------
+# Same source tree the bash script lives in; we copy host-agent/go.mod
+# + the Go source dirs. Built static (CGO_ENABLED=0) + stripped so the
+# final image stays small. VERSION is stamped into main.version via
+# -ldflags so `dell-fan-controller --version` (if we ever add the flag)
+# matches /etc/host-agent-version.
+FROM golang:1.23-bookworm AS go-builder
+ARG VERSION=dev
+WORKDIR /src
+COPY go.mod ./
+COPY cmd/      cmd/
+COPY internal/ internal/
+RUN CGO_ENABLED=0 go build \
+      -trimpath \
+      -ldflags="-s -w -X main.version=${VERSION}" \
+      -o /dell-fan-controller \
+      ./cmd/dell-fans
+
 # -------- builder: fetch the Go binaries from upstream releases --------
 FROM debian:stable-slim AS builder
 
@@ -96,10 +114,15 @@ COPY --from=builder /smartctl_exporter    /usr/local/bin/smartctl_exporter
 COPY --from=builder /nvidia_gpu_exporter  /usr/local/bin/nvidia_gpu_exporter
 COPY --from=builder /vmagent              /usr/local/bin/vmagent
 
-# Fan controller + per-chassis profiles
-COPY dell-fan-controller.sh /usr/local/bin/dell-fan-controller.sh
-COPY profiles/              /etc/dell-fans/profiles/
-RUN chmod +x /usr/local/bin/dell-fan-controller.sh
+# Fan controller (both impls) + per-chassis profiles. s6/dell-fans/run
+# selects between them via DELL_FANS_IMPL (default: bash). This lets us
+# ship one image that can run either while we gradually flip hosts to
+# the Go v2 and watch for regressions.
+COPY dell-fan-controller.sh             /usr/local/bin/dell-fan-controller.sh
+COPY --from=go-builder /dell-fan-controller /usr/local/bin/dell-fan-controller
+COPY profiles/                          /etc/dell-fans/profiles/
+RUN chmod +x /usr/local/bin/dell-fan-controller.sh \
+         /usr/local/bin/dell-fan-controller
 
 # s6 service definitions: one per sub-service, each probes its hardware
 COPY s6/ /etc/s6-overlay/s6-rc.d/

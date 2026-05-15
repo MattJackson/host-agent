@@ -1,0 +1,11 @@
+smartctl 7.3 2022-02-28 r5338 [x86_64-linux-6.1.0-17-amd64] (local build)
+Copyright (C) 2002-22, Bruce Allen, Christian Franke, www.smartmontools.org
+
+=== START OF INFORMATION SECTION ===
+Vendor:               SEAGATE
+Product:              ST3000NM0023
+Revision:             0006
+User Capacity:        3,000,592,982,016 bytes [3.00 TB]
+Logical block size:   512 bytes
+Rotation Rate:        7200 rpm
+Form Factor:          3.5 inches

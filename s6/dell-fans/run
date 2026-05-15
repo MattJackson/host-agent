@@ -1,10 +1,25 @@
 #!/usr/bin/env sh
-# Dell PowerEdge adaptive fan controller. The script's own vendor guard
-# refuses to start on non-Dell BMCs. Here we additionally short-circuit
-# when /dev/ipmi0 isn't present (non-IPMI host, e.g. Unraid on consumer
-# hardware) so the rest of the host-agent stack still runs.
+# Dell PowerEdge adaptive fan controller. The implementation is
+# selected by DELL_FANS_IMPL:
+#
+#   bash (default) — the original /usr/local/bin/dell-fan-controller.sh
+#   go             — the Go v2 binary at /usr/local/bin/dell-fan-controller
+#
+# Both have the same vendor guard, the same profile system, the same
+# state/metrics file formats, and issue identical bytes on the IPMI
+# wire. Either runs unchanged on classe + docker-2 + any future Dell.
+#
+# The script's own vendor guard refuses to start on non-Dell BMCs.
+# Here we additionally short-circuit when /dev/ipmi0 isn't present
+# (non-IPMI host, e.g. Unraid on consumer hardware) so the rest of
+# the host-agent stack still runs.
 if [ ! -c /dev/ipmi0 ]; then
   echo "[dell-fans] /dev/ipmi0 absent — fan controller disabled on this host"
   exec sleep infinity
 fi
-exec /usr/local/bin/dell-fan-controller.sh
+
+if [ "${DELL_FANS_IMPL:-bash}" = "go" ]; then
+  exec /usr/local/bin/dell-fan-controller
+else
+  exec /usr/local/bin/dell-fan-controller.sh
+fi
