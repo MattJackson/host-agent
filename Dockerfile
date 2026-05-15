@@ -67,7 +67,13 @@ RUN curl -fsSL -o vmutils.tgz \
 # -------- runtime --------
 FROM debian:stable-slim
 
+# Short git SHA baked at build time. vmagent reads /etc/host-agent-version
+# and stamps it onto every sample as the `version` external_label, so the
+# dashboard can show which build is running per host. Defaults to "dev"
+# for local builds.
+ARG VERSION=dev
 ARG S6_OVERLAY_VERSION=3.2.0.2
+RUN echo "$VERSION" > /etc/host-agent-version
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \

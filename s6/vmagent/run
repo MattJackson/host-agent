@@ -25,6 +25,11 @@ HOSTNAME_LABEL="$(hostname -s)"
 WAL_DIR=/var/lib/dell-fans/vmagent-wal
 PROFILE_DIR=/etc/dell-fans/profiles
 
+# Image build version (short git SHA, written at build time). Stamped
+# onto every pushed sample so the dashboard can show what's running
+# where without us guessing or running docker inspect.
+VERSION_LABEL="$(cat /etc/host-agent-version 2>/dev/null || echo dev)"
+
 mkdir -p "$WAL_DIR"
 
 # detect_model: matches dell-fan-controller.sh#detect_model exactly so
@@ -91,6 +96,7 @@ global:
   scrape_timeout: 10s
   external_labels:
     host: "${HOSTNAME_LABEL}"
+    version: "${VERSION_LABEL}"
 
 scrape_configs:
   - job_name: node
