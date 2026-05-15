@@ -29,6 +29,10 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=utility
+      # Fan controller implementation: 'bash' (original) or 'go' (v2).
+      # Defaults to bash for safety. Flip to go via `.env` next to this
+      # file, or per-deploy: `DELL_FANS_IMPL=go docker compose up -d`.
+      - DELL_FANS_IMPL=${DELL_FANS_IMPL:-bash}
     # Mount set:
     #   /:/host:ro,rslave        — node-exporter rootfs/procfs view
     #   /sys:/sys:ro             — cadvisor reads /sys/fs/cgroup directly; even
