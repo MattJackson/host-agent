@@ -9,10 +9,14 @@
 # Detect megaraid passthrough and exclude the bogus /dev/sd[a-z]
 # entries on those hosts. On plain SATA hosts (Unraid etc.) the
 # /dev/sd[a-z] entries are the real drives — no exclusion applied.
+#
+# Regex anchoring: smartctl-exporter's internal device identifier is
+# `/dev/sda;auto` (not bare `/dev/sda`), so the regex must NOT end-anchor
+# with `$` — match the prefix only.
 if smartctl --scan 2>/dev/null | grep -q 'megaraid'; then
-  echo "[smartctl-exporter] megaraid passthrough detected — excluding /dev/sd[a-z]+ phantoms"
+  echo "[smartctl-exporter] megaraid passthrough detected — excluding /dev/sd[a-z] phantoms"
   exec /usr/local/bin/smartctl_exporter \
     --web.listen-address=:9633 \
-    --smartctl.device-exclude='^/dev/sd[a-z]+$'
+    --smartctl.device-exclude='^/dev/sd[a-z]'
 fi
 exec /usr/local/bin/smartctl_exporter --web.listen-address=:9633

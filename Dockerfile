@@ -61,8 +61,8 @@ ARG S6_OVERLAY_VERSION=3.2.0.2
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      ipmitool smartmontools dmidecode \
-      ca-certificates mawk xz-utils tini \
+      ipmitool freeipmi-tools smartmontools dmidecode \
+      ca-certificates mawk xz-utils tini procps \
  && rm -rf /var/lib/apt/lists/*
 
 # s6-overlay (PID 1, restarts crashed sub-services individually)
