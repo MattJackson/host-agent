@@ -60,9 +60,10 @@ GPU_AWARE="${GPU_AWARE:-auto}"
 GPU_ENABLED=0
 HDD_AWARE="${HDD_AWARE:-auto}"
 HDD_ENABLED=0
-HDD_DEVICES=()         # entries are "<dev>|<smartctl -d spec>"
+HDD_DEVICES=()         # entries are "<dev>|<spec>|<type>" where type ∈ {hdd, ssd}
 hdd_last_read=0
 hdd_cached_max=0
+ssd_cached_max=0
 hdd_cached_details=""
 
 # Internal state.
@@ -78,6 +79,7 @@ in_emergency=0
 last_cpu_temp=-1
 last_pg_temp=-1
 last_hdd_temp=-1
+last_ssd_temp=-1
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1"; }
 
@@ -187,7 +189,22 @@ probe_hdd() {
         spec=$(echo "$line" | awk '{print $3}')
         [ -z "$dev" ] && continue
         [ -z "$spec" ] && continue
-        HDD_DEVICES+=("$dev|$spec")
+
+        # Classify each drive as spinning HDD vs SSD/NVMe by checking
+        # the Rotation Rate field of smartctl -i. HDDs report e.g.
+        # "Rotation Rate: 7200 rpm"; SSDs report "Solid State Device";
+        # NVMe drives may omit the field entirely. Default classification
+        # for unknown/missing rotation info is `ssd` — the more permissive
+        # thermal class — because tighter HDD-style targets on a misread
+        # would cause unnecessary fan ramps, whereas tagging an HDD as
+        # SSD only matters if temps run high (still caught by SSD's own
+        # threshold + the chassis emergency anyway).
+        local info type=ssd
+        info=$(smartctl -i -d "$spec" "$dev" 2>/dev/null)
+        if echo "$info" | grep -qE 'Rotation Rate:[[:space:]]+[0-9]+[[:space:]]+rpm'; then
+            type=hdd
+        fi
+        HDD_DEVICES+=("$dev|$spec|$type")
     done <<< "$scan"
 
     if [ "${#HDD_DEVICES[@]}" -eq 0 ]; then
@@ -197,11 +214,15 @@ probe_hdd() {
     fi
 
     HDD_ENABLED=1
-    local list=""
+    local list="" hdd_count=0 ssd_count=0
     for entry in "${HDD_DEVICES[@]}"; do
-        list+="${entry%|*}(${entry#*|}) "
+        list+="${entry%%|*}($(echo "$entry" | awk -F'|' '{print $2"/"$3}')) "
+        case "$entry" in
+            *\|hdd) hdd_count=$((hdd_count + 1)) ;;
+            *\|ssd) ssd_count=$((ssd_count + 1)) ;;
+        esac
     done
-    log "HDD monitoring: ${#HDD_DEVICES[@]} drive(s) — $list"
+    log "HDD monitoring: ${#HDD_DEVICES[@]} drive(s) (${hdd_count} HDD, ${ssd_count} SSD) — $list"
 }
 
 # Read all CPU die temps from /sys/class/hwmon (coretemp driver). Echoes
@@ -294,15 +315,16 @@ read_hdd_temps() {
     local now
     now=$(date +%s)
     if [ "$hdd_last_read" -gt 0 ] && [ $(( now - hdd_last_read )) -lt "$HDD_READ_INTERVAL" ]; then
-        echo "$hdd_cached_max|$hdd_cached_details"
+        echo "$hdd_cached_max|$ssd_cached_max|$hdd_cached_details"
         return 0
     fi
 
-    local max=0 details="" i=0
-    local entry dev spec out rc t
+    local hdd_max=0 ssd_max=0 details="" i=0
+    local entry dev spec type out rc t
     for entry in "${HDD_DEVICES[@]}"; do
-        dev="${entry%|*}"
-        spec="${entry#*|}"
+        dev=$(echo "$entry"  | awk -F'|' '{print $1}')
+        spec=$(echo "$entry" | awk -F'|' '{print $2}')
+        type=$(echo "$entry" | awk -F'|' '{print $3}')
         out=$(smartctl -A -n standby -d "$spec" "$dev" 2>/dev/null)
         rc=$?
         if [ "$rc" -eq 2 ]; then
@@ -316,8 +338,13 @@ read_hdd_temps() {
                 t=$(echo "$out" | grep -oE 'Temperature:[[:space:]]+[0-9]+[[:space:]]+Celsius' | grep -oE '[0-9]+' | head -1)
             fi
             if [ -n "$t" ] && [ "$t" -gt 0 ] 2>/dev/null; then
-                details+="d${i}:${t} "
-                [ "$t" -gt "$max" ] && max=$t
+                # Include drive type in the detail tag so the cycle log
+                # shows e.g. "d12s:44" for SSD slot 12, "d4h:30" for HDD.
+                details+="d${i}${type%?}:${t} "
+                case "$type" in
+                    ssd) [ "$t" -gt "$ssd_max" ] && ssd_max=$t ;;
+                    *)   [ "$t" -gt "$hdd_max" ] && hdd_max=$t ;;
+                esac
             else
                 details+="d${i}:? "
             fi
@@ -325,18 +352,19 @@ read_hdd_temps() {
         i=$(( i + 1 ))
     done
 
-    hdd_cached_max=$max
+    hdd_cached_max=$hdd_max
+    ssd_cached_max=$ssd_max
     hdd_cached_details="$details"
     hdd_last_read=$now
-    echo "$max|$details"
+    echo "$hdd_max|$ssd_max|$details"
 }
 
 # Aggregates all temp sources, reporting each class separately so the
 # main loop can run independent per-class PIDs and floors.
-# Echoes "<cpu_max>|<passive_gpu_max>|<active_gpu_max>|<hdd_max>|<details>".
+# Echoes "<cpu_max>|<passive_gpu_max>|<active_gpu_max>|<hdd_max>|<ssd_max>|<details>".
 get_temps() {
     local cpu_result gpu_result hdd_result
-    local cpu_max=0 passive_gpu_max=0 active_gpu_max=0 hdd_max=0 details=""
+    local cpu_max=0 passive_gpu_max=0 active_gpu_max=0 hdd_max=0 ssd_max=0 details=""
     if cpu_result=$(read_coretemp); then
         :
     elif cpu_result=$(read_ipmi_cpu); then
@@ -356,10 +384,12 @@ get_temps() {
 
     if hdd_result=$(read_hdd_temps); then
         hdd_max="${hdd_result%%|*}"
-        details+="${hdd_result#*|}"
+        local hrest="${hdd_result#*|}"
+        ssd_max="${hrest%%|*}"
+        details+="${hrest#*|}"
     fi
 
-    echo "$cpu_max|$passive_gpu_max|$active_gpu_max|$hdd_max|$details"
+    echo "$cpu_max|$passive_gpu_max|$active_gpu_max|$hdd_max|$ssd_max|$details"
 }
 
 # Set fan speed (decimal %, 0-100). Converts to hex byte at the BMC call.
@@ -535,6 +565,7 @@ dellfans_class_temp_celsius{class="cpu"} ${CPU_MAX:-0}
 dellfans_class_temp_celsius{class="passive_gpu"} ${PASSIVE_GPU_MAX:-0}
 dellfans_class_temp_celsius{class="active_gpu"} ${ACTIVE_GPU_MAX:-0}
 dellfans_class_temp_celsius{class="hdd"} ${HDD_MAX:-0}
+dellfans_class_temp_celsius{class="ssd"} ${SSD_MAX:-0}
 
 # HELP dellfans_class_target_celsius Per-class target temperature (deadband center) or assist threshold.
 # TYPE dellfans_class_target_celsius gauge
@@ -542,6 +573,7 @@ dellfans_class_target_celsius{class="cpu"} ${CPU_TARGET}
 dellfans_class_target_celsius{class="passive_gpu"} ${GPU_TARGET}
 dellfans_class_target_celsius{class="active_gpu"} ${ACTIVE_GPU_TARGET}
 dellfans_class_target_celsius{class="hdd"} ${HDD_TARGET}
+dellfans_class_target_celsius{class="ssd"} ${SSD_TARGET}
 
 # HELP dellfans_class_emergency_celsius Per-class emergency threshold — instant fans=100%.
 # TYPE dellfans_class_emergency_celsius gauge
@@ -549,12 +581,14 @@ dellfans_class_emergency_celsius{class="cpu"} ${CPU_EMERGENCY}
 dellfans_class_emergency_celsius{class="passive_gpu"} ${GPU_EMERGENCY}
 dellfans_class_emergency_celsius{class="active_gpu"} ${ACTIVE_GPU_EMERGENCY}
 dellfans_class_emergency_celsius{class="hdd"} ${HDD_EMERGENCY}
+dellfans_class_emergency_celsius{class="ssd"} ${SSD_EMERGENCY}
 
 # HELP dellfans_class_candidate_percent Per-class PID candidate fan speed. max() across all classes drives fans.
 # TYPE dellfans_class_candidate_percent gauge
 dellfans_class_candidate_percent{class="cpu"} ${cpu_cand:-0}
 dellfans_class_candidate_percent{class="passive_gpu"} ${pg_cand:-0}
 dellfans_class_candidate_percent{class="hdd"} ${hdd_cand:-0}
+dellfans_class_candidate_percent{class="ssd"} ${ssd_cand:-0}
 
 # HELP dellfans_class_proximity_floor_percent Per-class proximity-to-emergency floor (silent until temp enters approach window).
 # TYPE dellfans_class_proximity_floor_percent gauge
@@ -562,6 +596,7 @@ dellfans_class_proximity_floor_percent{class="cpu"} ${cpu_pf:-0}
 dellfans_class_proximity_floor_percent{class="passive_gpu"} ${pg_pf:-0}
 dellfans_class_proximity_floor_percent{class="active_gpu"} ${ag_pf:-0}
 dellfans_class_proximity_floor_percent{class="hdd"} ${hdd_pf:-0}
+dellfans_class_proximity_floor_percent{class="ssd"} ${ssd_pf:-0}
 
 # HELP dellfans_active_gpu_assist_percent Active-GPU intake-air assist contribution to chassis floor.
 # TYPE dellfans_active_gpu_assist_percent gauge
@@ -630,11 +665,12 @@ while true; do
         continue
     fi
 
-    # Parse cpu|passive_gpu|active_gpu|hdd|details
+    # Parse cpu|passive_gpu|active_gpu|hdd|ssd|details
     CPU_MAX="${result%%|*}";          rest="${result#*|}"
     PASSIVE_GPU_MAX="${rest%%|*}";    rest="${rest#*|}"
     ACTIVE_GPU_MAX="${rest%%|*}";     rest="${rest#*|}"
-    HDD_MAX="${rest%%|*}";            DETAILS="${rest#*|}"
+    HDD_MAX="${rest%%|*}";            rest="${rest#*|}"
+    SSD_MAX="${rest%%|*}";            DETAILS="${rest#*|}"
 
     # Emergency on anything: any class hitting its emergency threshold
     # snaps fans to 100%. CPU + passive GPU + HDDs share their respective
@@ -644,19 +680,20 @@ while true; do
     if [ "$CPU_MAX" -ge "$CPU_EMERGENCY" ] \
        || [ "$PASSIVE_GPU_MAX" -ge "$GPU_EMERGENCY" ] \
        || [ "$ACTIVE_GPU_MAX" -ge "$ACTIVE_GPU_EMERGENCY" ] \
-       || { [ "$HDD_MAX" -gt 0 ] && [ "$HDD_MAX" -ge "$HDD_EMERGENCY" ]; }; then
+       || { [ "$HDD_MAX" -gt 0 ] && [ "$HDD_MAX" -ge "$HDD_EMERGENCY" ]; } \
+       || { [ "$SSD_MAX" -gt 0 ] && [ "$SSD_MAX" -ge "$SSD_EMERGENCY" ]; }; then
         if [ "$current_speed" -ne 100 ]; then
             set_fan 100
             current_speed=100
-            log "EMERGENCY (cpu:${CPU_MAX}/${CPU_EMERGENCY} p_gpu:${PASSIVE_GPU_MAX}/${GPU_EMERGENCY} a_gpu:${ACTIVE_GPU_MAX}/${ACTIVE_GPU_EMERGENCY} hdd:${HDD_MAX}/${HDD_EMERGENCY}) — fans 100%"
+            log "EMERGENCY (cpu:${CPU_MAX}/${CPU_EMERGENCY} p_gpu:${PASSIVE_GPU_MAX}/${GPU_EMERGENCY} a_gpu:${ACTIVE_GPU_MAX}/${ACTIVE_GPU_EMERGENCY} hdd:${HDD_MAX}/${HDD_EMERGENCY} ssd:${SSD_MAX}/${SSD_EMERGENCY}) — fans 100%"
         else
-            log "EMERGENCY hold 100% — ${DETAILS}cpu:${CPU_MAX} p_gpu:${PASSIVE_GPU_MAX} a_gpu:${ACTIVE_GPU_MAX} hdd:${HDD_MAX}"
+            log "EMERGENCY hold 100% — ${DETAILS}cpu:${CPU_MAX} p_gpu:${PASSIVE_GPU_MAX} a_gpu:${ACTIVE_GPU_MAX} hdd:${HDD_MAX} ssd:${SSD_MAX}"
         fi
         in_emergency=1
         # PIDs/floors not computed in emergency — zero them so the
         # textfile reflects the actual short-circuited state.
-        cpu_cand=0 pg_cand=0 hdd_cand=0
-        cpu_pf=0 pg_pf=0 ag_pf=0 hdd_pf=0
+        cpu_cand=0 pg_cand=0 hdd_cand=0 ssd_cand=0
+        cpu_pf=0 pg_pf=0 ag_pf=0 hdd_pf=0 ssd_pf=0
         ag_assist=0
         src="emergency"
         emit_metrics || true
@@ -673,30 +710,35 @@ while true; do
     if [ "$in_emergency" -eq 1 ]; then
         int_base=$(printf "%.0f" "$base_speed")
         exit_speed=$(clamp "$int_base" "$MIN_FAN" "$MAX_FAN")
-        cpu_pf=$(proximity_floor "$CPU_MAX" "$CPU_EMERGENCY" "$CPU_APPROACH_WINDOW")
+        cpu_pf=0
+        [ "$CPU_MAX" -gt 0 ] && cpu_pf=$(proximity_floor "$CPU_MAX" "$CPU_EMERGENCY" "$CPU_APPROACH_WINDOW")
         pg_pf=0
         [ "$PASSIVE_GPU_MAX" -gt 0 ] && pg_pf=$(proximity_floor "$PASSIVE_GPU_MAX" "$GPU_EMERGENCY" "$GPU_APPROACH_WINDOW")
         ag_pf=0
         [ "$ACTIVE_GPU_MAX" -gt 0 ] && ag_pf=$(proximity_floor "$ACTIVE_GPU_MAX" "$ACTIVE_GPU_EMERGENCY" "$ACTIVE_GPU_APPROACH_WINDOW")
         hdd_pf=0
         [ "$HDD_MAX" -gt 0 ] && hdd_pf=$(proximity_floor "$HDD_MAX" "$HDD_EMERGENCY" "$HDD_APPROACH_WINDOW")
+        ssd_pf=0
+        [ "$SSD_MAX" -gt 0 ] && ssd_pf=$(proximity_floor "$SSD_MAX" "$SSD_EMERGENCY" "$SSD_APPROACH_WINDOW")
         [ "$cpu_pf" -gt "$exit_speed" ] && exit_speed=$cpu_pf
         [ "$pg_pf"  -gt "$exit_speed" ] && exit_speed=$pg_pf
         [ "$ag_pf"  -gt "$exit_speed" ] && exit_speed=$ag_pf
         [ "$hdd_pf" -gt "$exit_speed" ] && exit_speed=$hdd_pf
+        [ "$ssd_pf" -gt "$exit_speed" ] && exit_speed=$ssd_pf
         current_speed=$exit_speed
         set_fan "$current_speed"
-        log "Emergency cleared — fan=${current_speed}% (base=${int_base} cpu_pf=${cpu_pf} pg_pf=${pg_pf} ag_pf=${ag_pf} hdd_pf=${hdd_pf})"
+        log "Emergency cleared — fan=${current_speed}% (base=${int_base} cpu_pf=${cpu_pf} pg_pf=${pg_pf} ag_pf=${ag_pf} hdd_pf=${hdd_pf} ssd_pf=${ssd_pf})"
         in_emergency=0
     fi
 
-    # Three independent PIDs. Each candidate is computed from
+    # Four independent PIDs. Each candidate is computed from
     # `current_speed` plus that class's step (or drift). max() across all
     # candidates and floors below is what the fans actually do — the
     # worst-offender class wins without coupling its state to the others.
     cpu_cand=$(run_pid "$CPU_MAX"         "$CPU_TARGET" "$CPU_DEADBAND" "$last_cpu_temp")
     pg_cand=$(run_pid  "$PASSIVE_GPU_MAX" "$GPU_TARGET" "$GPU_DEADBAND" "$last_pg_temp")
     hdd_cand=$(run_pid "$HDD_MAX"         "$HDD_TARGET" "$HDD_DEADBAND" "$last_hdd_temp")
+    ssd_cand=$(run_pid "$SSD_MAX"         "$SSD_TARGET" "$SSD_DEADBAND" "$last_ssd_temp")
 
     # Per-class proximity floors. Each class has its own APPROACH_WINDOW
     # so a class operating closer to its limits (HDDs near 50°C) doesn't
@@ -731,7 +773,7 @@ while true; do
     # the log line tells us why fans are at the speed they're at.
     new_speed=$cpu_cand
     src="cpu"
-    for pair in "pg:$pg_cand" "hdd:$hdd_cand" "cpu_pf:$cpu_pf" "pg_pf:$pg_pf" "ag_pf:$ag_pf" "hdd_pf:$hdd_pf" "ag_assist:$ag_assist"; do
+    for pair in "pg:$pg_cand" "hdd:$hdd_cand" "ssd:$ssd_cand" "cpu_pf:$cpu_pf" "pg_pf:$pg_pf" "ag_pf:$ag_pf" "hdd_pf:$hdd_pf" "ssd_pf:$ssd_pf" "ag_assist:$ag_assist"; do
         s="${pair##*:}"
         n="${pair%:*}"
         if [ "$s" -gt "$new_speed" ]; then
@@ -746,7 +788,7 @@ while true; do
         set_fan "$current_speed"
     fi
 
-    log "${DETAILS}cpu:${CPU_MAX} p_gpu:${PASSIVE_GPU_MAX} a_gpu:${ACTIVE_GPU_MAX} hdd:${HDD_MAX} | pid c${cpu_cand}/p${pg_cand}/h${hdd_cand} pf c${cpu_pf}/p${pg_pf}/a${ag_pf}/h${hdd_pf} ag_assist:${ag_assist} → ${current_speed}%(${src}) base:${base_speed}"
+    log "${DETAILS}cpu:${CPU_MAX} p_gpu:${PASSIVE_GPU_MAX} a_gpu:${ACTIVE_GPU_MAX} hdd:${HDD_MAX} ssd:${SSD_MAX} | pid c${cpu_cand}/p${pg_cand}/h${hdd_cand}/s${ssd_cand} pf c${cpu_pf}/p${pg_pf}/a${ag_pf}/h${hdd_pf}/s${ssd_pf} ag_assist:${ag_assist} → ${current_speed}%(${src}) base:${base_speed}"
 
     # EWMA baseline update — every cycle, slow.
     base_speed=$(ewma "$base_speed" "$current_speed" "$ADAPT_ALPHA")
@@ -757,6 +799,7 @@ while true; do
     last_cpu_temp=$CPU_MAX
     [ "$PASSIVE_GPU_MAX" -gt 0 ] && last_pg_temp=$PASSIVE_GPU_MAX
     [ "$HDD_MAX"         -gt 0 ] && last_hdd_temp=$HDD_MAX
+    [ "$SSD_MAX"         -gt 0 ] && last_ssd_temp=$SSD_MAX
 
     now=$(date +%s)
     if [ $(( now - last_persist )) -ge "$PERSIST_INTERVAL" ]; then
