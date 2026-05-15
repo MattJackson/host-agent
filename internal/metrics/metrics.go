@@ -22,6 +22,9 @@ type Snapshot struct {
 	Samples      int
 	InEmergency  int // 0 or 1
 
+	// Wall-clock seconds the most recent cycle took (work only, NOT including the sleep INTERVAL).
+	CycleDurationSeconds int
+
 	// Per-class temps (0 if absent).
 	CPUMax        int
 	PassiveGPUMax int
@@ -83,6 +86,10 @@ func Render(s Snapshot) []byte {
 	fmt.Fprintf(&b, "# HELP dellfans_samples_total Number of decision cycles since controller start.\n")
 	fmt.Fprintf(&b, "# TYPE dellfans_samples_total counter\n")
 	fmt.Fprintf(&b, "dellfans_samples_total %d\n", s.Samples)
+
+	fmt.Fprintf(&b, "\n# HELP dellfans_cycle_duration_seconds Wall-clock seconds for the most recent main-loop cycle (get_temps + PIDs + proximity_floor + max() + set_fan, NOT including sleep INTERVAL).\n")
+	fmt.Fprintf(&b, "# TYPE dellfans_cycle_duration_seconds gauge\n")
+	fmt.Fprintf(&b, "dellfans_cycle_duration_seconds %d\n", s.CycleDurationSeconds)
 	fmt.Fprintf(&b, "\n")
 	fmt.Fprintf(&b, "# HELP dellfans_emergency_active Whether the controller is in emergency state (1=yes, 0=no).\n")
 	fmt.Fprintf(&b, "# TYPE dellfans_emergency_active gauge\n")

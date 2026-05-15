@@ -53,6 +53,11 @@ type Controller struct {
 	Samples      int
 	InEmergency  bool
 
+	// Diagnostic: wall-clock seconds the last Cycle() call took.
+	// Exposed via metrics.Snapshot.CycleDurationSeconds so we can SEE
+	// in Grafana how long each cycle takes instead of guessing.
+	lastCycleDuration int
+
 	// D-term per class.
 	LastCPUTemp int
 	LastPGTemp  int
@@ -155,6 +160,10 @@ func (c *Controller) PersistState() error {
 // the cycle short-circuits — same fail-safe as the bash original's
 // "Temp read failed — fans 100% for safety" branch.
 func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
+	cycleStart := time.Now()
+	defer func() {
+		c.lastCycleDuration = int(time.Since(cycleStart).Round(time.Second).Seconds())
+	}()
 	reading, ok := c.Reader.Read(ctx)
 	if !ok {
 		c.Log.Printf("Temp read failed — fans 100%% for safety")
@@ -310,9 +319,10 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 	}
 
 	snap := metrics.Snapshot{
-		CurrentSpeed:        c.CurrentSpeed,
-		BaseSpeed:           c.BaseSpeed,
-		Samples:             c.Samples,
+		CurrentSpeed:         c.CurrentSpeed,
+		BaseSpeed:            c.BaseSpeed,
+		Samples:              c.Samples,
+		CycleDurationSeconds: c.lastCycleDuration,
 		InEmergency:         0,
 		CPUMax:              reading.CPUMax,
 		PassiveGPUMax:       reading.PassiveGPUMax,
@@ -380,9 +390,10 @@ func (c *Controller) proximityFloors(reading sensors.Reading) []control.MaxCandi
 func (c *Controller) snapshotEmergency(reading sensors.Reading, source string) metrics.Snapshot {
 	cfg := c.Cfg
 	return metrics.Snapshot{
-		CurrentSpeed:        c.CurrentSpeed,
-		BaseSpeed:           c.BaseSpeed,
-		Samples:             c.Samples,
+		CurrentSpeed:         c.CurrentSpeed,
+		BaseSpeed:            c.BaseSpeed,
+		Samples:              c.Samples,
+		CycleDurationSeconds: c.lastCycleDuration,
 		InEmergency:         1,
 		CPUMax:              reading.CPUMax,
 		PassiveGPUMax:       reading.PassiveGPUMax,

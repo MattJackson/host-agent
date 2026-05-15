@@ -10,6 +10,10 @@ dellfans_base_speed_percent 20.0240
 # TYPE dellfans_samples_total counter
 dellfans_samples_total 3
 
+# HELP dellfans_cycle_duration_seconds Wall-clock seconds for the most recent main-loop cycle (get_temps + PIDs + proximity_floor + max() + set_fan, NOT including sleep INTERVAL).
+# TYPE dellfans_cycle_duration_seconds gauge
+dellfans_cycle_duration_seconds 0
+
 # HELP dellfans_emergency_active Whether the controller is in emergency state (1=yes, 0=no).
 # TYPE dellfans_emergency_active gauge
 dellfans_emergency_active 0
