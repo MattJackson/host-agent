@@ -18,7 +18,10 @@ services:
     restart: unless-stopped
     privileged: true
     network_mode: host
-    pid: host
+    # pid: host omitted — s6-overlay requires PID 1, and the host
+    # metrics we display (CPU, mem, disk, net, load, textfile) don't
+    # need host PID visibility. Sub-services that ask for it (cadvisor)
+    # have their own access via the docker socket.
     runtime: ${HOST_AGENT_RUNTIME:-runc}
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
