@@ -1,0 +1,60 @@
+#!/usr/bin/env sh
+# vmagent: scrape every sub-service on this host's localhost ports and
+# ship the samples to the central Prometheus via remote_write.
+#
+# external_labels.host = kernel hostname. The dashboard reads this and
+# only this — no static host labels in prometheus.yml, no operator-
+# supplied hostname. "Whatever the box reports" is the host name.
+#
+# remote_write URL is HARDCODED. To change it, build + release a new
+# image. New host = run the container; nothing else.
+
+REMOTE_WRITE_URL="http://docker-1.internal.pq.io:9090/api/v1/write"
+HOSTNAME_LABEL="$(hostname -s)"
+# WAL lives in /var/lib/dell-fans (legacy mount name — that volume is
+# already bound through the existing compose/run; renamed to
+# /var/lib/host-agent in a later cleanup).
+WAL_DIR=/var/lib/dell-fans/vmagent-wal
+
+mkdir -p "$WAL_DIR"
+
+cat > /run/vmagent.yml <<EOF
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    host: "${HOSTNAME_LABEL}"
+
+scrape_configs:
+  - job_name: node
+    static_configs:
+      - targets: ["localhost:9100"]
+
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["localhost:8089"]
+
+  - job_name: ipmi
+    scrape_interval: 30s
+    scrape_timeout: 20s
+    static_configs:
+      - targets: ["localhost:9290"]
+
+  - job_name: smartctl
+    scrape_interval: 60s
+    scrape_timeout: 30s
+    static_configs:
+      - targets: ["localhost:9633"]
+
+  - job_name: nvidia-gpu
+    static_configs:
+      - targets: ["localhost:9835"]
+EOF
+
+echo "[vmagent] host=${HOSTNAME_LABEL} remote_write=${REMOTE_WRITE_URL}"
+
+exec /usr/local/bin/vmagent \
+  -promscrape.config=/run/vmagent.yml \
+  -remoteWrite.url="${REMOTE_WRITE_URL}" \
+  -remoteWrite.tmpDataPath="${WAL_DIR}" \
+  -httpListenAddr=:8429

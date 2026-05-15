@@ -6,6 +6,10 @@
 #   ipmi_exporter          — :9290  chassis sensors
 #   smartctl_exporter      — :9633  drive SMART
 #   nvidia_gpu_exporter    — :9835  GPU temp/util/mem/power
+#   vmagent                — push all of the above to central Prometheus
+#                            (hardcoded remote_write URL, host label =
+#                             kernel hostname). No per-host config; the
+#                             dashboard is a pure receiver.
 #
 # Each sub-service probes its hardware on start and `sleep infinity` if
 # absent — same image runs on Dell + non-Dell, GPU + headless, Debian +
@@ -23,6 +27,7 @@ ARG CADVISOR_VERSION=0.55.1
 ARG IPMI_EXPORTER_VERSION=1.10.0
 ARG SMARTCTL_EXPORTER_VERSION=0.13.0
 ARG NVIDIA_GPU_EXPORTER_VERSION=1.4.1
+ARG VMAGENT_VERSION=1.108.0
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates tar \
@@ -53,6 +58,11 @@ RUN curl -fsSL -o nvidia.tgz \
  && tar -xzf nvidia.tgz \
  && cp nvidia_gpu_exporter /nvidia_gpu_exporter
 
+RUN curl -fsSL -o vmutils.tgz \
+      "https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v${VMAGENT_VERSION}/vmutils-linux-amd64-v${VMAGENT_VERSION}.tar.gz" \
+ && tar -xzf vmutils.tgz vmagent-prod \
+ && mv vmagent-prod /vmagent
+
 
 # -------- runtime --------
 FROM debian:stable-slim
@@ -78,6 +88,7 @@ COPY --from=builder /cadvisor             /usr/local/bin/cadvisor
 COPY --from=builder /ipmi_exporter        /usr/local/bin/ipmi_exporter
 COPY --from=builder /smartctl_exporter    /usr/local/bin/smartctl_exporter
 COPY --from=builder /nvidia_gpu_exporter  /usr/local/bin/nvidia_gpu_exporter
+COPY --from=builder /vmagent              /usr/local/bin/vmagent
 
 # Fan controller + per-chassis profiles
 COPY dell-fan-controller.sh /usr/local/bin/dell-fan-controller.sh
