@@ -32,14 +32,20 @@ services:
     #                              with --privileged the container still has its
     #                              own cgroup namespace, so we hand it the host's
     #                              /sys. Without this, cadvisor sees no containers.
+    #   /run:/run:ro             — cadvisor opens /run/docker.sock AND
+    #                              /run/containerd/containerd.sock at hardcoded
+    #                              paths; --docker=unix://... only redirects the
+    #                              docker socket, not containerd. /host/run/...
+    #                              doesn't help because cadvisor doesn't look there.
+    #   /var/lib/docker:ro       — cadvisor reads container metadata from here.
     #   /dev:/dev                — ipmitool + smartctl hardcode /dev/* paths and
     #                              Docker doesn't auto-import host devices.
     #   /var/lib/dell-fans       — fan EWMA baseline + vmagent WAL persistence.
-    # docker.sock + /var/lib/docker are reachable via /host/var/run/...,
-    # cadvisor's run script picks them up there — no explicit mount needed.
     volumes:
       - /:/host:ro,rslave
       - /sys:/sys:ro
+      - /run:/run:ro
+      - /var/lib/docker:/var/lib/docker:ro
       - /dev:/dev
       - /var/lib/dell-fans:/var/lib/dell-fans
     labels:

@@ -1,31 +1,18 @@
 #!/usr/bin/env sh
-# Reach the host Docker socket transitively via the / -> /host bind.
-# On modern Linux distros /var/run is a symlink to /run, but the symlink
-# resolves against the *container's* filesystem (its own tmpfs /run),
-# not the host's. So /host/var/run/docker.sock is wrong — we have to go
-# straight to /host/run/docker.sock. Fall back through the older paths
-# in case the operator mounted /var/run explicitly.
-for cand in /host/run/docker.sock /host/var/run/docker.sock /var/run/docker.sock; do
-  if [ -S "$cand" ]; then SOCK="$cand"; break; fi
-done
-if [ -z "${SOCK:-}" ]; then
-  echo "[cadvisor] no Docker socket reachable — disabled"
+# Host /run is bind-mounted at /run (not /host/run), which gives cadvisor
+# both /run/docker.sock and /run/containerd/containerd.sock at the paths
+# it hardcodes internally. --docker=unix://... can redirect the docker
+# socket but cadvisor also needs containerd's socket to register the
+# docker container factory, and that path is not configurable.
+if [ ! -S /run/docker.sock ]; then
+  echo "[cadvisor] /run/docker.sock not present — cadvisor disabled (mount the host /run)"
   exec sleep infinity
 fi
-
-# Same trick for /var/lib/docker — cadvisor reads container metadata.
-# /var/lib is on the host's root fs (not a separate mount), so
-# /host/var/lib/docker DOES resolve correctly here.
-DOCKER_ROOT=
-[ -d /host/var/lib/docker ] && DOCKER_ROOT="--docker_root=/host/var/lib/docker"
-[ -z "$DOCKER_ROOT" ] && [ -d /var/lib/docker ] && DOCKER_ROOT="--docker_root=/var/lib/docker"
 
 # Port 8089 (not 8080) to avoid colliding with apps that commonly bind
 # 8080 on host network (e.g. unifi-os).
 exec /usr/local/bin/cadvisor \
   --port=8089 \
-  --docker=unix://$SOCK \
-  $DOCKER_ROOT \
   --docker_only=true \
   --store_container_labels=true \
   --housekeeping_interval=30s \
