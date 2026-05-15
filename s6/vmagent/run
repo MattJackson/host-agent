@@ -47,11 +47,12 @@ case "$CHASSIS" in
         replacement: exhaust'
     ;;
   *R410*)
-    # R410 BMC only exposes a single ambient temp (id=14). No per-CPU
-    # IPMI sensors and no exhaust sensor — CPU temps come from
-    # coretemp via node_hwmon below.
+    # R410 BMC only exposes a single ambient temp. ipmi_exporter uses
+    # FreeIPMI's record ID (id=10) — NOT the BMC raw ID (0Eh = 14)
+    # you'd see in `ipmitool sdr`. No per-CPU IPMI sensors and no
+    # exhaust sensor; CPU temps come from coretemp via node_hwmon below.
     IPMI_RELABEL='      - source_labels: [__name__, name, id]
-        regex: "ipmi_temperature_celsius;Ambient Temp;14"
+        regex: "ipmi_temperature_celsius;Ambient Temp;10"
         target_label: class
         replacement: inlet'
     ;;
