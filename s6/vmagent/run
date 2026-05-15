@@ -9,61 +9,73 @@
 # remote_write URL is HARDCODED. To change it, build + release a new
 # image. New host = run the container; nothing else.
 #
-# Per-chassis sensor normalization: each chassis has its own IPMI
-# sensor naming (R730: "Temp" id 26/27 for CPUs; R410: "Ambient Temp"
-# id 14 for inlet; etc.). We detect the chassis via dmidecode and
-# emit metric_relabel_configs that stamp a stable `class` label
-# (cpu1/cpu2/inlet/exhaust) onto whichever sensor matches on this box,
-# so the dashboard can query {class="cpu1"} regardless of chassis.
+# Per-chassis sensor normalization: same `profiles/<model>.env` files
+# the fan controller uses, extended with SENSOR_* vars. We auto-detect
+# the chassis via dmidecode (same as dell-fan-controller's detect_model),
+# source the matching profile, and emit metric_relabel_configs that
+# stamp a stable `class` label (cpu1/cpu2/inlet/exhaust) onto whichever
+# IPMI sensor matches on this box. Dashboard queries {class="cpu1"}
+# regardless of chassis.
+#
+# Adding a new chassis: drop a `host-agent/profiles/<model>.env` with
+# SENSOR_* values + fan tuning. No vmagent code change.
 
 REMOTE_WRITE_URL="http://docker-1.internal.pq.io:9090/api/v1/write"
 HOSTNAME_LABEL="$(hostname -s)"
 WAL_DIR=/var/lib/dell-fans/vmagent-wal
+PROFILE_DIR=/etc/dell-fans/profiles
 
 mkdir -p "$WAL_DIR"
 
-CHASSIS=$(dmidecode -s system-product-name 2>/dev/null | tr -d '\n' || echo unknown)
-echo "[vmagent] chassis detected: ${CHASSIS}"
+# detect_model: matches dell-fan-controller.sh#detect_model exactly so
+# vmagent loads the same profile the fan controller does.
+detect_model() {
+  raw=$(cat /sys/class/dmi/id/product_name 2>/dev/null | tr -d '\n')
+  [ -z "$raw" ] && { echo unknown; return; }
+  raw="${raw#PowerEdge }"
+  echo "$raw" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9' '_' | sed 's/_*$//'
+}
 
-# Build per-chassis IPMI metric_relabel rules. Add cases here as new
-# hardware is added to the fleet; the dashboard never has to change.
-case "$CHASSIS" in
-  *R730*|*XC730*)
-    IPMI_RELABEL='      - source_labels: [__name__, name, id]
-        regex: "ipmi_temperature_celsius;Temp;26"
-        target_label: class
-        replacement: cpu1
-      - source_labels: [__name__, name, id]
-        regex: "ipmi_temperature_celsius;Temp;27"
-        target_label: class
-        replacement: cpu2
-      - source_labels: [__name__, name]
-        regex: "ipmi_temperature_celsius;Inlet Temp"
-        target_label: class
-        replacement: inlet
-      - source_labels: [__name__, name]
-        regex: "ipmi_temperature_celsius;Exhaust Temp"
-        target_label: class
-        replacement: exhaust'
-    ;;
-  *R410*)
-    # R410 BMC only exposes a single ambient temp. ipmi_exporter uses
-    # FreeIPMI's record ID (id=10) — NOT the BMC raw ID (0Eh = 14)
-    # you'd see in `ipmitool sdr`. No per-CPU IPMI sensors and no
-    # exhaust sensor; CPU temps come from coretemp via node_hwmon below.
-    IPMI_RELABEL='      - source_labels: [__name__, name, id]
-        regex: "ipmi_temperature_celsius;Ambient Temp;10"
-        target_label: class
-        replacement: inlet'
-    ;;
-  *)
-    IPMI_RELABEL='      # no chassis-specific IPMI sensor map for "'"${CHASSIS}"'"; dashboard CPU tiles fall back to coretemp'
-    ;;
-esac
+MODEL="${PROFILE:-$(detect_model)}"
+PROFILE_FILE="$PROFILE_DIR/$MODEL.env"
 
-# Universal coretemp -> class mapping. node_hwmon_temp_celsius reports
+if [ -f "$PROFILE_FILE" ]; then
+  echo "[vmagent] chassis=$MODEL profile=$PROFILE_FILE"
+  set -a; . "$PROFILE_FILE"; set +a
+else
+  echo "[vmagent] chassis=$MODEL profile=none (will use coretemp fallback for CPU temps)"
+fi
+# Default profile fills any unset SENSOR_* + fan-tuning vars.
+set -a; . "$PROFILE_DIR/default.env"; set +a
+
+# build_ipmi_rule: emit one metric_relabel_configs entry. Empty NAME
+# means "this chassis doesn't expose that class via IPMI" -> skip.
+build_ipmi_rule() {
+  class=$1 name=$2 id=$3
+  [ -z "$name" ] && return
+  if [ -n "$id" ]; then
+    printf '      - source_labels: [__name__, name, id]\n'
+    printf '        regex: "ipmi_temperature_celsius;%s;%s"\n' "$name" "$id"
+  else
+    printf '      - source_labels: [__name__, name]\n'
+    printf '        regex: "ipmi_temperature_celsius;%s"\n' "$name"
+  fi
+  printf '        target_label: class\n'
+  printf '        replacement: %s\n' "$class"
+}
+
+IPMI_RELABEL=$(
+  build_ipmi_rule cpu1    "${SENSOR_CPU1_NAME}"    "${SENSOR_CPU1_ID}"
+  build_ipmi_rule cpu2    "${SENSOR_CPU2_NAME}"    "${SENSOR_CPU2_ID}"
+  build_ipmi_rule inlet   "${SENSOR_INLET_NAME}"   "${SENSOR_INLET_ID}"
+  build_ipmi_rule exhaust "${SENSOR_EXHAUST_NAME}" "${SENSOR_EXHAUST_ID}"
+)
+[ -z "$IPMI_RELABEL" ] && IPMI_RELABEL='      # no SENSOR_* configured for this chassis'
+
+# Universal coretemp class mapping. node_hwmon_temp_celsius reports
 # every core; the dashboard takes max() per chip, so labeling the
-# whole socket is enough.
+# whole socket is enough. Works on every Linux host regardless of
+# chassis or BMC.
 NODE_RELABEL='      - source_labels: [__name__, chip]
         regex: "node_hwmon_temp_celsius;platform_coretemp_0"
         target_label: class
