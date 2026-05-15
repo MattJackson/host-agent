@@ -555,6 +555,10 @@ dellfans_base_speed_percent ${base_speed}
 # TYPE dellfans_samples_total counter
 dellfans_samples_total ${samples}
 
+# HELP dellfans_cycle_duration_seconds Wall-clock seconds for the most recent main-loop cycle (get_temps + PIDs + proximity_floor + max() + set_fan, NOT including sleep INTERVAL).
+# TYPE dellfans_cycle_duration_seconds gauge
+dellfans_cycle_duration_seconds ${cycle_duration:-0}
+
 # HELP dellfans_emergency_active Whether the controller is in emergency state (1=yes, 0=no).
 # TYPE dellfans_emergency_active gauge
 dellfans_emergency_active ${in_emergency}
@@ -657,6 +661,7 @@ set_fan "$current_speed"
 log "Manual control engaged at ${current_speed}%"
 
 while true; do
+    cycle_start=$(date +%s)
     if ! result=$(get_temps); then
         log "Temp read failed — fans 100% for safety"
         set_fan 100
@@ -807,6 +812,14 @@ while true; do
     if [ $(( now - last_persist )) -ge "$PERSIST_INTERVAL" ]; then
         write_state
     fi
+
+    # Cycle duration includes get_temps + PIDs + proximity_floor + max() +
+    # set_fan. Exposed so we can SEE in Grafana how long each cycle takes
+    # instead of guessing — at INTERVAL=15s a 13s cycle means controller
+    # is at ~50% duty cycle, which is fine; a 25s cycle means smartctl
+    # cache is missing or IPMI is timing out, and total cycle latency
+    # gets past the 30s "spike detection" budget.
+    cycle_duration=$(( $(date +%s) - cycle_start ))
 
     emit_metrics || true
 

@@ -39,9 +39,9 @@ VERSION_LABEL="$(cat /etc/host-agent-version 2>/dev/null || echo dev)"
 TEXTFILE_DIR=/var/lib/dell-fans/state
 mkdir -p "$TEXTFILE_DIR"
 cat > "$TEXTFILE_DIR/.host_agent_info.prom.tmp" <<EOF
-# HELP host_agent_info Build version of the host-agent container.
+# HELP host_agent_info Build version + detected chassis profile for the host-agent container.
 # TYPE host_agent_info gauge
-host_agent_info{version="${VERSION_LABEL}"} 1
+host_agent_info{version="${VERSION_LABEL}",chassis="${MODEL:-unknown}",profile="${PROFILE_FILE##*/}"} 1
 EOF
 mv "$TEXTFILE_DIR/.host_agent_info.prom.tmp" "$TEXTFILE_DIR/host_agent_info.prom"
 
