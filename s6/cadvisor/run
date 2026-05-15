@@ -1,14 +1,28 @@
 #!/usr/bin/env sh
-# cadvisor needs the Docker socket. Skip if the host didn't mount it
-# (rare, but keeps the image portable to hosts that don't want it).
-if [ ! -S /var/run/docker.sock ]; then
-  echo "[cadvisor] /var/run/docker.sock not mounted — cadvisor disabled"
+# Reach Docker via /host/var/run/docker.sock — the / -> /host mount
+# already gives us the host's docker socket transitively, so the user
+# doesn't have to add a separate -v /var/run/docker.sock mount.
+# Falls back to /var/run/docker.sock if the operator mounted it directly.
+SOCK=/host/var/run/docker.sock
+[ -S "$SOCK" ] || SOCK=/var/run/docker.sock
+if [ ! -S "$SOCK" ]; then
+  echo "[cadvisor] no Docker socket reachable (tried /host/var/run/docker.sock and /var/run/docker.sock) — disabled"
   exec sleep infinity
 fi
+
+# Same trick for /var/lib/docker — cadvisor reads container metadata
+# from there. Use /host/var/lib/docker if present, otherwise the local
+# mount, otherwise let cadvisor default and miss some metadata.
+DOCKER_ROOT=
+[ -d /host/var/lib/docker ] && DOCKER_ROOT="--docker_root=/host/var/lib/docker"
+[ -z "$DOCKER_ROOT" ] && [ -d /var/lib/docker ] && DOCKER_ROOT="--docker_root=/var/lib/docker"
+
 # Port 8089 (not 8080) to avoid colliding with apps that commonly bind
 # 8080 on host network (e.g. unifi-os).
 exec /usr/local/bin/cadvisor \
   --port=8089 \
+  --docker=unix://$SOCK \
+  $DOCKER_ROOT \
   --docker_only=true \
   --store_container_labels=true \
   --housekeeping_interval=30s \

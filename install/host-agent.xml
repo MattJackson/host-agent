@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>host-agent</Name>
+  <Repository>registry.docker.pq.io/host-agent:latest</Repository>
+  <Registry/>
+  <Network>host</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>true</Privileged>
+  <Support/>
+  <Project/>
+  <Overview>
+    Single-container host agent for the pq fleet.
+
+    Bundles node-exporter, cadvisor, smartctl-exporter, ipmi-exporter,
+    nvidia-gpu-exporter, the Dell PowerEdge fan controller, and vmagent.
+
+    vmagent scrapes every sub-exporter on localhost and pushes the
+    samples to the central Prometheus at docker-1.internal.pq.io:9090.
+    external_labels.host is set to this box's kernel hostname, so the
+    dashboard sees a new host the moment its first push lands — no
+    central config changes needed.
+
+    Sub-exporters that need hardware not present on this host
+    (ipmi-exporter without /dev/ipmi0, nvidia-gpu-exporter without
+    nvidia-smi, etc.) self-disable. Same image runs on Dell, Mac mini,
+    plain Linux + Docker, or Unraid.
+  </Overview>
+  <Category>Tools: Status:Stable</Category>
+  <WebUI/>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/prometheus/docs/main/static/prometheus-logo-orange.svg</Icon>
+  <ExtraParams>--restart=unless-stopped</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+
+  <Config Name="Host filesystem" Target="/host" Default="/" Mode="ro,rslave" Description="Read-only view of the host filesystem. node-exporter reads /host/proc, /host/sys, /host/var/run/docker.sock, /host/var/lib/docker through this single mount — leave the default." Type="Path" Display="advanced-hide" Required="true" Mask="false">/</Config>
+
+  <Config Name="Host devices" Target="/dev" Default="/dev" Mode="rw" Description="Direct passthrough of host /dev. ipmitool and smartctl talk to /dev/ipmi0 and /dev/sd* / /dev/bus/0 directly — Docker doesn't auto-share host devices even with Privileged on. Leave the default." Type="Path" Display="advanced-hide" Required="true" Mask="false">/dev</Config>
+
+  <Config Name="State directory" Target="/var/lib/dell-fans" Default="/mnt/user/appdata/host-agent" Mode="rw" Description="Persistent state for the Dell fan controller's EWMA baseline (takes 24–48 h to learn) and the vmagent write-ahead log. Safe to keep as the default; safe to leave empty if you're OK with state being reset every container restart." Type="Path" Display="always" Required="false" Mask="false">/mnt/user/appdata/host-agent</Config>
+
+  <Label Name="watchtower" Default="true" Mode="" Description="Marks the container as eligible for the watchtower auto-updater on this LAN.">com.centurylinklabs.watchtower.enable=true</Label>
+</Container>
