@@ -59,65 +59,24 @@
     },
     {
       "id": 71,
-      "title": "CPU 1",
-      "description": "Hottest core on socket 0 (coretemp). Works on every Linux host; chassis-agnostic. Falls back through IPMI on hosts whose BMC has a per-CPU sensor.",
+      "title": "CPU",
+      "description": "Hottest core per socket via coretemp (Linux universal). Falls back through IPMI on hosts whose BMC exposes per-CPU sensors. CPU 2 is empty on single-socket hosts; that's expected.",
       "type": "stat",
       "gridPos": {
         "h": 4,
-        "w": 6,
+        "w": 12,
         "x": 0,
         "y": 6
       },
       "targets": [
         {
+          "refId": "A",
           "expr": "max(node_hwmon_temp_celsius{host=~\"$host\",class=\"cpu1\"}) or max(ipmi_temperature_celsius{host=~\"$host\",class=\"cpu1\"})",
           "legendFormat": "CPU 1",
           "instant": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "celsius",
-          "thresholds": {
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 65
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        }
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
         },
-        "graphMode": "none"
-      }
-    },
-    {
-      "id": 78,
-      "title": "CPU 2",
-      "description": "Hottest core on socket 1 (coretemp). Empty on single-socket hosts; that's expected.",
-      "type": "stat",
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 6,
-        "y": 6
-      },
-      "targets": [
         {
+          "refId": "B",
           "expr": "max(node_hwmon_temp_celsius{host=~\"$host\",class=\"cpu2\"}) or max(ipmi_temperature_celsius{host=~\"$host\",class=\"cpu2\"})",
           "legendFormat": "CPU 2",
           "instant": true
@@ -128,18 +87,9 @@
           "unit": "celsius",
           "thresholds": {
             "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 65
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 65 },
+              { "color": "red", "value": 80 }
             ]
           }
         }
@@ -155,7 +105,7 @@
     },
     {
       "id": 72,
-      "title": "Inlet Temp",
+      "title": "Inlet",
       "type": "stat",
       "gridPos": {
         "h": 4,
@@ -202,7 +152,7 @@
     },
     {
       "id": 73,
-      "title": "Exhaust Temp",
+      "title": "Exhaust",
       "type": "stat",
       "gridPos": {
         "h": 4,
@@ -249,7 +199,7 @@
     },
     {
       "id": 81,
-      "title": "Drive Temperatures",
+      "title": "Drives",
       "description": "Current SMART temp per physical drive, tagged HDD or SSD via smartctl_device_rotation_rate. Label priority: Unraid slot (disk1/parity/cache) via unraid_disk_info join, then MegaRAID slot N stripped from bus_0_megaraid_N, otherwise the bare Linux device (sda, sdb). HDD thresholds yellow≥45C red≥55C; SSD yellow≥55C red≥65C.",
       "type": "stat",
       "gridPos": {
@@ -340,7 +290,7 @@
     {
       "id": 82,
       "title": "Fans",
-      "description": "Controller setpoint (the % the fan-controller loop is commanding) and the resulting per-fan RPM. Read this together with the Temperatures graph below — the setpoint is what the controller decided based on those temps.",
+      "description": "Controller setpoint (% the fan-controller is commanding chassis fans to spin at) + actual measured fan speeds. Chassis fans show RPM via IPMI. GPU fans show % (via nvidia-smi), labeled by GPU model name (A5500, P4, etc.) so you can tell which card is spinning. Read together with the Temperatures panel — setpoint is what the controller decided based on those temps; the GPU fan is the card's OWN fan, which drives chassis assist when it saturates (v0.1.3+).",
       "type": "stat",
       "gridPos": {
         "h": 4,
@@ -352,13 +302,19 @@
         {
           "refId": "A",
           "expr": "fan_controller_fan_setpoint_percent{host=~\"$host\"}",
-          "legendFormat": "Setpoint",
+          "legendFormat": "Chassis setpoint",
           "instant": true
         },
         {
           "refId": "B",
           "expr": "ipmi_fan_speed_rpm{host=~\"$host\"}",
-          "legendFormat": "{{name}}",
+          "legendFormat": "Chassis {{name}}",
+          "instant": true
+        },
+        {
+          "refId": "C",
+          "expr": "label_replace(nvidia_smi_fan_speed_ratio{host=~\"$host\"} * 100 * on(uuid) group_left(name) nvidia_smi_gpu_info{host=~\"$host\"}, \"gpu\", \"$1\", \"name\", \".+ (\\\\S+)$\")",
+          "legendFormat": "GPU {{gpu}}",
           "instant": true
         }
       ],
@@ -377,7 +333,7 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "Setpoint" },
+            "matcher": { "id": "byName", "options": "Chassis setpoint" },
             "properties": [
               { "id": "unit", "value": "percent" },
               { "id": "decimals", "value": 0 },
@@ -388,6 +344,22 @@
                   { "color": "green", "value": null },
                   { "color": "yellow", "value": 40 },
                   { "color": "red", "value": 70 }
+                ]
+              }}
+            ]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": "^GPU .+$" },
+            "properties": [
+              { "id": "unit", "value": "percent" },
+              { "id": "decimals", "value": 0 },
+              { "id": "max", "value": 100 },
+              { "id": "thresholds", "value": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 85 },
+                  { "color": "red", "value": 95 }
                 ]
               }}
             ]
@@ -543,7 +515,7 @@
     },
     {
       "id": 92,
-      "title": "GPU Temp",
+      "title": "GPU",
       "description": "GPU die temperature — lives in the temperatures section because it's a thermal signal that feeds the fan controller, not a usage metric.",
       "type": "stat",
       "gridPos": {
