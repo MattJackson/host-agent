@@ -119,19 +119,23 @@ Drop the two env vars in an `.env` next to the compose, then `docker compose up 
 
 ### Option C — Unraid (XML template direct from GitHub)
 
-The `install/host-agent.xml` template is consumable directly from GitHub — no Community Applications submission needed:
+The `install/host-agent.xml` template is consumable directly from GitHub — no Community Applications submission needed.
 
-1. **Docker** tab → **Add Container** (button at the bottom).
-2. In the **Template** field at the top of the form, paste:
+**1. Drop the template into Unraid's user-templates directory.** Unraid's Add Container form doesn't accept URLs, so fetch the XML once from a console or SSH session:
 
-   ```
-   https://raw.githubusercontent.com/mattjackson/host-agent/main/install/host-agent.xml
-   ```
+```sh
+curl -sfL \
+  https://raw.githubusercontent.com/mattjackson/host-agent/main/install/host-agent.xml \
+  -o /boot/config/plugins/dockerMan/templates-user/my-host-agent.xml
+```
 
-   Click the small **Apply** next to the field. The form auto-populates from the XML.
-3. Fill in **Prometheus remote-write URL** (the one always-visible field).
-4. (Optional) Toggle **Advanced View** in the top right of the form to expose the bearer-token / basic-auth / TLS-skip fields if your Prometheus needs them.
-5. Big **Apply** button at the bottom — pulls the image, starts the container.
+(The `my-` prefix is Unraid convention for user-added templates and is what makes it show up under "User templates" in the dropdown.)
+
+**2. Add the container from the web UI.** Docker tab → **Add Container** → in the **Template** dropdown at the top, pick **host-agent** under "User templates". The form auto-populates.
+
+**3. Fill in the always-visible Prometheus remote-write URL.** Toggle **Advanced View** in the top right to expose the optional bearer-token / basic-auth / TLS-skip fields if your Prometheus needs them.
+
+**4. Click Apply** at the bottom — pulls the image, starts the container, shows you the logs.
 
 All paths and the `--cgroupns=host` flag are pre-baked into the template. To get listed in Community Applications search, submit the XML to [Squidly271/AppFeed](https://github.com/Squidly271/AppFeed) — not required for personal use.
 
