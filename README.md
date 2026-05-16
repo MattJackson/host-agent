@@ -74,7 +74,10 @@ The container will appear in your Prometheus on its first scrape, labeled with `
 | `ipmi_exporter`      | 9290 | `/dev/ipmi0` exists                 | sleep |
 | `smartctl_exporter`  | 9633 | always (auto-discovers)             | always |
 | `nvidia_gpu_exporter`| 9835 | `nvidia-smi` is present             | sleep |
+| `unraid-disks`       | —    | `/host/etc/unraid-version` exists   | sleep |
 | `vmagent`            | 8429 | `PROMETHEUS_REMOTE_WRITE_URL` set   | sleep |
+
+`unraid-disks` emits a textfile metric `unraid_disk_info{device,slot}` mapping Unraid's array slot labels (`disk1`, `parity`, `cache`, ...) to Linux device names by parsing `/var/local/emhttp/disks.ini`. Dashboards join on `(host, device)` to display the slot label instead of the bare `sdX` letter — matches the bay labeling in Unraid's own UI.
 
 `node_exporter` runs with `--collector.textfile.directory=/var/lib/fan-controller/state`, so the fan controller's own state metrics (setpoint, EWMA baseline, per-class temps & targets) are emitted alongside the standard node metrics on `:9100`. The dashboard treats them as native Prometheus series.
 
