@@ -303,13 +303,13 @@
         {
           "refId": "A",
           "expr": "fan_controller_fan_setpoint_percent{host=~\"$host\"}",
-          "legendFormat": "Chassis setpoint",
+          "legendFormat": "Chassis",
           "instant": true
         },
         {
           "refId": "B",
           "expr": "ipmi_fan_speed_rpm{host=~\"$host\"}",
-          "legendFormat": "Chassis {{name}}",
+          "legendFormat": "{{name}}",
           "instant": true
         },
         {
@@ -334,7 +334,7 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "Chassis setpoint" },
+            "matcher": { "id": "byName", "options": "Chassis" },
             "properties": [
               { "id": "unit", "value": "percent" },
               { "id": "decimals", "value": 0 },
