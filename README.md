@@ -117,17 +117,23 @@ services:
 
 Drop the two env vars in an `.env` next to the compose, then `docker compose up -d`. The `infra/deploy.sh` wrapper in this repo handles the "auto-detect nvidia runtime" case.
 
-### Option C — Unraid (Community Applications template)
+### Option C — Unraid (XML template direct from GitHub)
 
-The `install/host-agent.xml` template is consumable directly from GitHub:
+The `install/host-agent.xml` template is consumable directly from GitHub — no Community Applications submission needed:
 
-1. Settings → Community Applications → Add Container → **Template repositories**:
-   `https://github.com/mattjackson/host-agent`
-2. Search for **host-agent**, click **Install**.
-3. Fill in **Prometheus remote-write URL** (the only required field).
-4. Apply.
+1. **Docker** tab → **Add Container** (button at the bottom).
+2. In the **Template** field at the top of the form, paste:
 
-All other paths and the `--cgroupns=host` flag are pre-baked into the template. Add bearer / basic auth via the optional fields if your Prometheus needs them.
+   ```
+   https://raw.githubusercontent.com/mattjackson/host-agent/main/install/host-agent.xml
+   ```
+
+   Click the small **Apply** next to the field. The form auto-populates from the XML.
+3. Fill in **Prometheus remote-write URL** (the one always-visible field).
+4. (Optional) Toggle **Advanced View** in the top right of the form to expose the bearer-token / basic-auth / TLS-skip fields if your Prometheus needs them.
+5. Big **Apply** button at the bottom — pulls the image, starts the container.
+
+All paths and the `--cgroupns=host` flag are pre-baked into the template. To get listed in Community Applications search, submit the XML to [Squidly271/AppFeed](https://github.com/Squidly271/AppFeed) — not required for personal use.
 
 ### Option D — `install.sh` one-shot (curl-pipe)
 
