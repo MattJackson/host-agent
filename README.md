@@ -124,12 +124,9 @@ The `install/host-agent.xml` template is consumable directly from GitHub — no 
 **1. Drop the template into Unraid's user-templates directory.** Unraid's Add Container form doesn't accept URLs, so fetch the XML once from a console or SSH session:
 
 ```sh
-curl -sfL \
-  https://raw.githubusercontent.com/mattjackson/host-agent/main/install/host-agent.xml \
-  -o /boot/config/plugins/dockerMan/templates-user/my-host-agent.xml
+curl -sfLO --output-dir /boot/config/plugins/dockerMan/templates-user \
+  https://raw.githubusercontent.com/mattjackson/host-agent/main/install/host-agent.xml
 ```
-
-(The `my-` prefix is Unraid convention for user-added templates and is what makes it show up under "User templates" in the dropdown.)
 
 **2. Add the container from the web UI.** Docker tab → **Add Container** → in the **Template** dropdown at the top, pick **host-agent** under "User templates". The form auto-populates.
 
