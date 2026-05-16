@@ -1,8 +1,8 @@
 #!/bin/bash
-# Thin reconcile wrapper. Safe to run every 30 min (compose-reconcile
-# timer on classe calls this). On non-reconcile hosts the file is
-# optional — watchtower keeps the container updated; this script just
-# exists so the bootstrap path matches every other /srv stack.
+# Thin reconcile wrapper. Safe to run every 30 min from a systemd
+# timer / cron. On hosts that use watchtower to keep the image fresh
+# this script is optional — invoke it once to bring the container up,
+# then let watchtower handle subsequent updates.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"

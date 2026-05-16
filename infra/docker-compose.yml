@@ -2,7 +2,7 @@
 # controller + Prometheus exporters (node, cadvisor, ipmi, smartctl,
 # nvidia-gpu). Each sub-process probes its hardware on start and
 # `sleep infinity` if absent, so the same image drops onto any Linux
-# Docker host (classe, docker-2, Unraid, future Dell boxes) unchanged.
+# Docker host (Debian/Ubuntu, Unraid, plain Docker, Dell or not).
 #
 # After a host has this compose in place, all future updates flow via
 # watchtower bumping the image tag — no further per-host action.
