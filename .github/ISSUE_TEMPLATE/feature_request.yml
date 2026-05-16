@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Before filing, please skim [CONTRIBUTING.md → What's out of
-        scope](https://github.com/OWNER/host-agent/blob/main/CONTRIBUTING.md#whats-out-of-scope).
+        scope](https://github.com/mattjackson/host-agent/blob/main/CONTRIBUTING.md#whats-out-of-scope).
         External Go deps, lookup tables, and library bindings for
         IPMI/smartctl/nvidia-smi are by-design no-go's.
 

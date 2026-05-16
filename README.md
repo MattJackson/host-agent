@@ -1,7 +1,7 @@
 # host-agent
 
-[![CI](https://github.com/OWNER/host-agent/actions/workflows/test.yml/badge.svg)](https://github.com/OWNER/host-agent/actions/workflows/test.yml)
-[![Release](https://img.shields.io/github/v/release/OWNER/host-agent?display_name=tag&sort=semver)](https://github.com/OWNER/host-agent/releases)
+[![CI](https://github.com/mattjackson/host-agent/actions/workflows/test.yml/badge.svg)](https://github.com/mattjackson/host-agent/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/mattjackson/host-agent?display_name=tag&sort=semver)](https://github.com/mattjackson/host-agent/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Single-container, drop-on-any-Linux-host bundle that does two things at once:
@@ -36,7 +36,7 @@ Each sub-service probes its hardware on start and self-disables if its prerequis
 
 ```sh
 # 1. Pick where you're pushing metrics.
-export HOST_AGENT_IMAGE=ghcr.io/OWNER/host-agent:latest
+export HOST_AGENT_IMAGE=ghcr.io/mattjackson/host-agent:latest
 export PROMETHEUS_REMOTE_WRITE_URL=https://your.prometheus/api/v1/write
 
 # 2. (Dell hosts only) load the IPMI kernel module + create state dir.
@@ -122,7 +122,7 @@ Drop the two env vars in an `.env` next to the compose, then `docker compose up 
 The `install/host-agent.xml` template is consumable directly from GitHub:
 
 1. Settings → Community Applications → Add Container → **Template repositories**:
-   `https://github.com/OWNER/host-agent`
+   `https://github.com/mattjackson/host-agent`
 2. Search for **host-agent**, click **Install**.
 3. Fill in **Prometheus remote-write URL** (the only required field).
 4. Apply.
@@ -132,9 +132,9 @@ All other paths and the `--cgroupns=host` flag are pre-baked into the template. 
 ### Option D — `install.sh` one-shot (curl-pipe)
 
 ```sh
-export HOST_AGENT_IMAGE=ghcr.io/OWNER/host-agent:latest
+export HOST_AGENT_IMAGE=ghcr.io/mattjackson/host-agent:latest
 export PROMETHEUS_REMOTE_WRITE_URL=https://your.prometheus/api/v1/write
-curl -sf https://raw.githubusercontent.com/OWNER/host-agent/main/install/install.sh | sh
+curl -sf https://raw.githubusercontent.com/mattjackson/host-agent/main/install/install.sh | sh
 ```
 
 Idempotent (stops + removes any existing `host-agent` container first). All flags hardcoded — to change them, fork or build a new image, don't edit the script per host.
@@ -145,7 +145,7 @@ Every knob is an env var. Required:
 
 | var | what it is |
 |---|---|
-| `HOST_AGENT_IMAGE` | image to pull, e.g. `ghcr.io/OWNER/host-agent:latest` |
+| `HOST_AGENT_IMAGE` | image to pull, e.g. `ghcr.io/mattjackson/host-agent:latest` |
 | `PROMETHEUS_REMOTE_WRITE_URL` | your receiver's `/api/v1/write` endpoint |
 
 Optional — Prometheus push auth (bearer XOR basic):

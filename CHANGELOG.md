@@ -35,5 +35,5 @@ First public release.
 - **Server-side example compose** in `examples/server-side/` — minimal
   Prometheus + Grafana receiver to get a fresh user end-to-end in ~5 min.
 
-[Unreleased]: https://github.com/OWNER/host-agent/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/OWNER/host-agent/releases/tag/v0.1.0
+[Unreleased]: https://github.com/mattjackson/host-agent/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.0

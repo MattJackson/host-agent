@@ -10,14 +10,14 @@ body:
         actually reproduce.
 
         For security vulnerabilities, do NOT file here. See
-        [SECURITY.md](https://github.com/OWNER/host-agent/blob/main/SECURITY.md).
+        [SECURITY.md](https://github.com/mattjackson/host-agent/blob/main/SECURITY.md).
 
   - type: input
     id: version
     attributes:
       label: host-agent version
       description: From `docker inspect host-agent --format '{{.Config.Image}}'` or the dashboard's "Build" panel.
-      placeholder: "ghcr.io/OWNER/host-agent:v0.1.2 (sha 7f3a91b)"
+      placeholder: "ghcr.io/mattjackson/host-agent:v0.1.2 (sha 7f3a91b)"
     validations:
       required: true
 
