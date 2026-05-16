@@ -158,6 +158,15 @@ Every knob is an env var. Required:
 | `HOST_AGENT_IMAGE` | image to pull, e.g. `ghcr.io/mattjackson/host-agent:latest` |
 | `PROMETHEUS_REMOTE_WRITE_URL` | your receiver's `/api/v1/write` endpoint |
 
+**Persistent URL fallback** (recommended on Unraid and any platform with a managed container UI): write the URL to a file inside the state mount instead of (or in addition to) the env var:
+
+```sh
+mkdir -p /var/lib/fan-controller/config   # on Unraid: /mnt/user/appdata/host-agent/config/
+echo "https://your.prometheus/api/v1/write" > /var/lib/fan-controller/config/remote_write_url
+```
+
+vmagent reads from this file if `PROMETHEUS_REMOTE_WRITE_URL` is unset or equal to the example.com placeholder. The file lives in the appdata mount, so it survives container recreations, image updates, and template re-curls — set it once, never reconfigure.
+
 Optional — Prometheus push auth (bearer XOR basic):
 
 | var | default | what |
@@ -178,7 +187,7 @@ Optional — per-class fan controller overrides (advanced; override the chassis 
 |---|---|---|
 | `CPU_TARGET` / `CPU_EMERGENCY` / `CPU_DEADBAND` / `CPU_APPROACH_WINDOW` | `70` / `80` / `5` / `5` | CPU class PID |
 | `GPU_TARGET` / `GPU_EMERGENCY` / `GPU_DEADBAND` / `GPU_APPROACH_WINDOW` | `83` / `90` / `2` / `7` | passive GPU PID |
-| `ACTIVE_GPU_TARGET` / `ACTIVE_GPU_EMERGENCY` | `78` / `88` | active GPU (own-fan) assist |
+| `ACTIVE_GPU_OWN_FAN_THRESHOLD` / `ACTIVE_GPU_EMERGENCY` | `85` / `88` | active GPU (own-fan-driven) assist threshold + temp safety net |
 | `HDD_TARGET` / `HDD_EMERGENCY` | `40` / `50` | HDD PID |
 | `SSD_TARGET` / `SSD_EMERGENCY` | `50` / `65` | SSD PID |
 | `PROFILE` | autodetected | force a profile slug (e.g. `r730xd`); overrides dmidecode |

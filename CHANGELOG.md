@@ -6,6 +6,27 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-05-16
+
+### Fixed
+
+- **Unraid Force Update no longer breaks metric push permanently.** Some
+  Unraid Force Update paths reset env vars to the template's `Default`
+  value, which in v0.1.2/v0.1.3 was the example.com placeholder. vmagent
+  would then push to a non-existent domain instead of self-disabling.
+  v0.1.4 detects the literal placeholder and treats it as unset.
+
+### Added
+
+- **Persistent URL fallback file**: `/var/lib/fan-controller/config/remote_write_url`
+  (on Unraid: `/mnt/user/appdata/host-agent/config/remote_write_url`).
+  If `PROMETHEUS_REMOTE_WRITE_URL` env is unset or equal to the placeholder,
+  vmagent reads the URL from this file instead. The file lives in the
+  state mount, so it survives container recreations, image updates, AND
+  template re-curls — set it once, never reconfigure across updates.
+- vmagent's "disabled" log message now points users at both options
+  (env var or fallback file) with the Unraid appdata path called out.
+
 ## [0.1.3] — 2026-05-16
 
 ### Changed
@@ -105,7 +126,8 @@ First public release.
 - **Server-side example compose** in `examples/server-side/` — minimal
   Prometheus + Grafana receiver to get a fresh user end-to-end in ~5 min.
 
-[Unreleased]: https://github.com/mattjackson/host-agent/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/mattjackson/host-agent/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.4
 [0.1.3]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.3
 [0.1.2]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.2
 [0.1.1]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.1
