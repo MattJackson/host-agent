@@ -33,16 +33,16 @@ type Snapshot struct {
 	SSDMax        int
 
 	// Per-class targets/emergencies (from config).
-	CPUTarget         int
-	PassiveGPUTarget  int
-	ActiveGPUTarget   int
-	HDDTarget         int
-	SSDTarget         int
-	CPUEmergency      int
+	CPUTarget           int
+	PassiveGPUTarget    int
+	ActiveGPUTarget     int
+	HDDTarget           int
+	SSDTarget           int
+	CPUEmergency        int
 	PassiveGPUEmergency int
-	ActiveGPUEmergency int
-	HDDEmergency      int
-	SSDEmergency      int
+	ActiveGPUEmergency  int
+	HDDEmergency        int
+	SSDEmergency        int
 
 	// Per-class PID candidates (0 in emergency).
 	CPUCand int

@@ -106,7 +106,7 @@ func TestCycle_EmergencyTriggers100Percent(t *testing.T) {
 	cfg := defaultCfg(t)
 	reader := &stubReader{
 		readings: []sensors.Reading{{
-			CPUMax: 85, // >= CPU_EMERGENCY=80
+			CPUMax:  85, // >= CPU_EMERGENCY=80
 			Details: "P0.t1:85 ",
 		}},
 		oks: []bool{true},

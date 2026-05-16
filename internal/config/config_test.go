@@ -64,12 +64,12 @@ func TestParseLine_PlainAssign(t *testing.T) {
 
 func TestStripInlineComment(t *testing.T) {
 	cases := map[string]string{
-		`KEY=value # trailing`:     `KEY=value`,
-		`KEY="a # not a comment"`:  `KEY="a # not a comment"`,
-		`KEY='a # not a comment'`:  `KEY='a # not a comment'`,
-		`# whole line comment`:     ``,
-		`plain text`:               `plain text`,
-		`KEY=value`:                `KEY=value`,
+		`KEY=value # trailing`:    `KEY=value`,
+		`KEY="a # not a comment"`: `KEY="a # not a comment"`,
+		`KEY='a # not a comment'`: `KEY='a # not a comment'`,
+		`# whole line comment`:    ``,
+		`plain text`:              `plain text`,
+		`KEY=value`:               `KEY=value`,
 	}
 	for in, want := range cases {
 		if got := stripInlineComment(in); got != want {
@@ -187,10 +187,10 @@ func TestLoad_EnvOverridesProfiles(t *testing.T) {
 	profileDir := filepath.Join(repoRoot, "profiles")
 
 	env := map[string]string{
-		"MIN_FAN":      "30", // override r730xd's 10
-		"CPU_TARGET":   "65", // override default's 70
-		"GPU_AWARE":    "false",
-		"NONEXISTENT":  "x", // should be ignored — not a known field
+		"MIN_FAN":     "30", // override r730xd's 10
+		"CPU_TARGET":  "65", // override default's 70
+		"GPU_AWARE":   "false",
+		"NONEXISTENT": "x", // should be ignored — not a known field
 	}
 	lookup := func(k string) (string, bool) {
 		v, ok := env[k]
