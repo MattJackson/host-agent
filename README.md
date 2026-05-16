@@ -31,31 +31,61 @@ same :9100 endpoint.
 ```yaml
 services:
   host-agent:
-    image: registry.docker.pq.io/host-agent:latest
+    image: ${HOST_AGENT_IMAGE:?HOST_AGENT_IMAGE must be set}
     container_name: host-agent
     restart: unless-stopped
     privileged: true
     network_mode: host
-    pid: host
+    cgroup: host
     runtime: ${HOST_AGENT_RUNTIME:-runc}
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=utility
+      - PROMETHEUS_REMOTE_WRITE_URL=${PROMETHEUS_REMOTE_WRITE_URL:?PROMETHEUS_REMOTE_WRITE_URL must be set}
+      - PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN=${PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN:-}
+      - PROMETHEUS_REMOTE_WRITE_USERNAME=${PROMETHEUS_REMOTE_WRITE_USERNAME:-}
+      - PROMETHEUS_REMOTE_WRITE_PASSWORD=${PROMETHEUS_REMOTE_WRITE_PASSWORD:-}
+      - PROMETHEUS_REMOTE_WRITE_TLS_INSECURE_SKIP_VERIFY=${PROMETHEUS_REMOTE_WRITE_TLS_INSECURE_SKIP_VERIFY:-}
     volumes:
       - /:/host:ro,rslave
       - /sys:/sys:ro
-      - /dev:/dev
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /run/docker.sock:/run/docker.sock
+      - /run/containerd:/run/containerd:ro
       - /var/lib/docker:/var/lib/docker:ro
+      - /dev:/dev
       - /var/lib/fan-controller:/var/lib/fan-controller
     labels:
       - com.centurylinklabs.watchtower.enable=true
 ```
 
-**GPU hosts**: set `HOST_AGENT_RUNTIME=nvidia` in the environment (e.g.
-in an `.env` next to the compose) so the NVIDIA Container Runtime
-injects `nvidia-smi` at start. Default is `runc`, which is harmless on
+**Required env**:
+
+| var | what it is |
+|---|---|
+| `HOST_AGENT_IMAGE` | image to pull, e.g. `ghcr.io/<user>/host-agent:latest` |
+| `PROMETHEUS_REMOTE_WRITE_URL` | your receiver's `/api/v1/write` endpoint |
+
+**GPU hosts**: set `HOST_AGENT_RUNTIME=nvidia` so the NVIDIA Container
+Runtime injects `nvidia-smi` at start. Default `runc` is harmless on
 hosts without nvidia-container-toolkit.
+
+**Auth** (optional; bearer XOR basic):
+
+```sh
+# Bearer (preferred for Grafana Cloud, hosted Prometheus, etc.)
+PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN=...
+
+# OR HTTP basic auth
+PROMETHEUS_REMOTE_WRITE_USERNAME=...
+PROMETHEUS_REMOTE_WRITE_PASSWORD=...
+
+# Self-signed TLS on the receiver
+PROMETHEUS_REMOTE_WRITE_TLS_INSECURE_SKIP_VERIFY=true
+```
+
+The receiver needs Prometheus 2.33+ run with
+`--web.enable-remote-write-receiver`, or any compatible TSDB
+(VictoriaMetrics, Grafana Mimir, Cortex, Grafana Cloud).
 
 **One-time host setup**: load the IPMI kernel module on Dell hosts, and
 make sure `/var/lib/fan-controller` exists. `infra/host-requirements.sh`
@@ -89,10 +119,9 @@ that's a non-issue in practice.
 
 ## Build / release
 
-`.github/workflows/build-host-agent.yml` builds + pushes
-`registry.docker.pq.io/host-agent:latest` on every push under
-`host-agent/**`. Weekly cron rebuild picks up base-image and upstream
-exporter security fixes. No manual `build.sh`.
+`.github/workflows/build-host-agent.yml` builds + pushes the image on
+every push under `host-agent/**`. Weekly cron rebuild picks up
+base-image and upstream exporter security fixes. No manual `build.sh`.
 
 Pinned upstream versions are in the `ARG ...` lines at the top of the
 Dockerfile — bump those and commit to roll forward.

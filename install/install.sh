@@ -1,26 +1,33 @@
 #!/bin/sh
 # host-agent one-shot installer for any Linux + Docker host.
 #
-# Usage (on the new host, as a user that can run docker):
-#     curl -sf https://docker.pq.io/host-agent-install.sh | sh
+# Required env (set before invoking):
+#     HOST_AGENT_IMAGE                 e.g. ghcr.io/<user>/host-agent:latest
+#     PROMETHEUS_REMOTE_WRITE_URL      your receiver's /api/v1/write endpoint
+#
+# Optional env (auth, mutually exclusive bearer XOR basic):
+#     PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN
+#     PROMETHEUS_REMOTE_WRITE_USERNAME / _PASSWORD
+#     PROMETHEUS_REMOTE_WRITE_TLS_INSECURE_SKIP_VERIFY=true
+#
+# Example:
+#     export HOST_AGENT_IMAGE=ghcr.io/example/host-agent:latest
+#     export PROMETHEUS_REMOTE_WRITE_URL=https://prom.example/api/v1/write
+#     curl -sf https://example.com/host-agent-install.sh | sh
 #
 # What it does:
-#   - logs in to the private registry (if you've already provided creds
-#     via `docker login`, this is a no-op)
-#   - pulls registry.docker.pq.io/host-agent:latest
-#   - runs the container with:
-#         --privileged --network host --restart=unless-stopped
-#         -v /:/host:ro,rslave                       (host fs read view)
-#         -v /dev:/dev                               (IPMI + smart devices)
-#         -v /var/lib/host-agent:/var/lib/fan-controller  (fan baseline + WAL)
-#         --label com.centurylinklabs.watchtower.enable=true
-#
-# Hardcoded flags — every host gets the same setup. To change a
-# default, build + release a new image; watchtower bumps it fleet-wide.
+#   - pulls $HOST_AGENT_IMAGE
+#   - stops any existing host-agent container
+#   - starts the container with the standard mount/flag set and
+#     forwards any PROMETHEUS_REMOTE_WRITE_* env vars set above so
+#     vmagent can target your receiver.
 
 set -eu
 
-IMAGE="registry.docker.pq.io/host-agent:latest"
+: "${HOST_AGENT_IMAGE:?must be set, e.g. ghcr.io/<user>/host-agent:latest}"
+: "${PROMETHEUS_REMOTE_WRITE_URL:?must be set to the receiver /api/v1/write endpoint}"
+
+IMAGE="$HOST_AGENT_IMAGE"
 NAME="host-agent"
 STATE_DIR="/var/lib/host-agent"
 
@@ -41,6 +48,22 @@ if docker inspect "$NAME" >/dev/null 2>&1; then
 fi
 
 echo "host-agent-install: starting $NAME"
+
+# Forward PROMETHEUS_REMOTE_WRITE_* env vars set in the caller's shell
+# (if any) into the container. Empty / unset → omitted, so the image
+# defaults take over.
+ENV_ARGS=""
+for v in PROMETHEUS_REMOTE_WRITE_URL \
+         PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN \
+         PROMETHEUS_REMOTE_WRITE_USERNAME \
+         PROMETHEUS_REMOTE_WRITE_PASSWORD \
+         PROMETHEUS_REMOTE_WRITE_TLS_INSECURE_SKIP_VERIFY; do
+  eval val=\${$v:-}
+  if [ -n "$val" ]; then
+    ENV_ARGS="$ENV_ARGS -e $v=$val"
+  fi
+done
+
 docker run -d \
   --name "$NAME" \
   --restart unless-stopped \
@@ -48,6 +71,7 @@ docker run -d \
   --network host \
   --cgroupns host \
   --label com.centurylinklabs.watchtower.enable=true \
+  $ENV_ARGS \
   -v /:/host:ro,rslave \
   -v /sys:/sys:ro \
   -v /run/docker.sock:/run/docker.sock \

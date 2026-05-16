@@ -6,8 +6,23 @@
 # only this — no static host labels in prometheus.yml, no operator-
 # supplied hostname. "Whatever the box reports" is the host name.
 #
-# remote_write URL is HARDCODED. To change it, build + release a new
-# image. New host = run the container; nothing else.
+# Configurable via env vars (passed through from docker compose / the
+# install.sh wrapper / the Unraid CA template):
+#
+#   PROMETHEUS_REMOTE_WRITE_URL
+#       Full https?://host:port/api/v1/write URL of the receiver. The
+#       receiver must run Prometheus 2.33+ with
+#       --web.enable-remote-write-receiver.
+#
+#   PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN
+#       Bearer token sent as `Authorization: Bearer …`. Empty = no auth.
+#
+#   PROMETHEUS_REMOTE_WRITE_USERNAME / _PASSWORD
+#       Basic auth. Empty = no auth. Mutually exclusive with bearer.
+#
+#   PROMETHEUS_REMOTE_WRITE_TLS_INSECURE_SKIP_VERIFY=true
+#       Skip TLS cert verification on the receiver. For self-signed
+#       certs only — leave unset in normal operation.
 #
 # Per-chassis sensor normalization: same `profiles/<model>.env` files
 # the fan controller uses, extended with SENSOR_* vars. We auto-detect
@@ -20,8 +35,15 @@
 # Adding a new chassis: drop a `host-agent/profiles/<model>.env` with
 # SENSOR_* values + fan tuning. No vmagent code change.
 
-REMOTE_WRITE_URL="http://docker-1.internal.pq.io:9090/api/v1/write"
+REMOTE_WRITE_URL="${PROMETHEUS_REMOTE_WRITE_URL:-}"
 HOSTNAME_LABEL="$(hostname -s)"
+
+if [ -z "$REMOTE_WRITE_URL" ]; then
+  echo "[vmagent] PROMETHEUS_REMOTE_WRITE_URL not set — vmagent disabled."
+  echo "[vmagent] Set it to your receiver's /api/v1/write endpoint to enable metric push."
+  echo "[vmagent] Sibling exporters (node, cadvisor, ipmi, smartctl, nvidia-gpu, fan controller) continue running."
+  exec sleep infinity
+fi
 WAL_DIR=/var/lib/fan-controller/vmagent-wal
 PROFILE_DIR=/etc/fan-controller/profiles
 
@@ -138,10 +160,29 @@ ${IPMI_RELABEL}
       - targets: ["localhost:9835"]
 EOF
 
-echo "[vmagent] host=${HOSTNAME_LABEL} remote_write=${REMOTE_WRITE_URL}"
-
-exec /usr/local/bin/vmagent \
+# Build auth flags conditionally so an unset env var = no flag (vmagent
+# treats an empty value as "set" and tries to use it).
+set -- \
   -promscrape.config=/run/vmagent.yml \
   -remoteWrite.url="${REMOTE_WRITE_URL}" \
   -remoteWrite.tmpDataPath="${WAL_DIR}" \
   -httpListenAddr=:8429
+
+AUTH_MODE=none
+if [ -n "${PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN:-}" ]; then
+  set -- "$@" -remoteWrite.bearerToken="${PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN}"
+  AUTH_MODE=bearer
+elif [ -n "${PROMETHEUS_REMOTE_WRITE_USERNAME:-}" ]; then
+  set -- "$@" \
+    -remoteWrite.basicAuth.username="${PROMETHEUS_REMOTE_WRITE_USERNAME}" \
+    -remoteWrite.basicAuth.password="${PROMETHEUS_REMOTE_WRITE_PASSWORD:-}"
+  AUTH_MODE=basic
+fi
+
+if [ "${PROMETHEUS_REMOTE_WRITE_TLS_INSECURE_SKIP_VERIFY:-}" = "true" ]; then
+  set -- "$@" -remoteWrite.tlsInsecureSkipVerify=true
+fi
+
+echo "[vmagent] host=${HOSTNAME_LABEL} remote_write=${REMOTE_WRITE_URL} auth=${AUTH_MODE}"
+
+exec /usr/local/bin/vmagent "$@"

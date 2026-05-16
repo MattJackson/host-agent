@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>host-agent</Name>
-  <Repository>registry.docker.pq.io/host-agent:latest</Repository>
+  <Repository>ghcr.io/YOUR_USER/host-agent:latest</Repository>
   <Registry/>
   <Network>host</Network>
   <MyIP/>
@@ -10,21 +10,24 @@
   <Support/>
   <Project/>
   <Overview>
-    Single-container host agent for the pq fleet.
+    Single-container host agent. Bundles node-exporter, cadvisor,
+    smartctl-exporter, ipmi-exporter, nvidia-gpu-exporter, an adaptive
+    Dell PowerEdge fan controller, and vmagent.
 
-    Bundles node-exporter, cadvisor, smartctl-exporter, ipmi-exporter,
-    nvidia-gpu-exporter, the Dell PowerEdge fan controller, and vmagent.
+    vmagent scrapes every sub-exporter on localhost and pushes samples
+    via Prometheus remote_write. Set PROMETHEUS_REMOTE_WRITE_URL to
+    your receiver's /api/v1/write endpoint (Prometheus, VictoriaMetrics,
+    Grafana Cloud, Mimir, etc.); optional bearer or basic auth via the
+    other PROMETHEUS_REMOTE_WRITE_* env vars.
 
-    vmagent scrapes every sub-exporter on localhost and pushes the
-    samples to the central Prometheus at docker-1.internal.pq.io:9090.
-    external_labels.host is set to this box's kernel hostname, so the
-    dashboard sees a new host the moment its first push lands — no
-    central config changes needed.
+    external_labels.host is the box's kernel hostname, so the dashboard
+    sees a new host the moment its first push lands — no central
+    config changes needed.
 
     Sub-exporters that need hardware not present on this host
     (ipmi-exporter without /dev/ipmi0, nvidia-gpu-exporter without
-    nvidia-smi, etc.) self-disable. Same image runs on Dell, Mac mini,
-    plain Linux + Docker, or Unraid.
+    nvidia-smi, fan controller without a Dell BMC) self-disable. Same
+    image runs on Dell, Mac mini, plain Linux + Docker, or Unraid.
   </Overview>
   <Category>Tools: Status:Stable</Category>
   <WebUI/>
@@ -51,4 +54,14 @@
   <Config Name="Host devices" Target="/dev" Default="/dev" Mode="rw" Description="Direct passthrough of host /dev. ipmitool and smartctl talk to /dev/ipmi0 and /dev/sd* / /dev/bus/0 directly — Docker doesn't auto-share host devices even with Privileged on. Leave the default." Type="Path" Display="advanced-hide" Required="true" Mask="false">/dev</Config>
 
   <Config Name="State directory" Target="/var/lib/fan-controller" Default="/mnt/user/appdata/host-agent" Mode="rw" Description="Persistent state for the Dell fan controller's EWMA baseline (takes 24–48 h to learn) and the vmagent write-ahead log. Pre-filled; advanced field — no need to touch." Type="Path" Display="advanced-hide" Required="true" Mask="false">/mnt/user/appdata/host-agent</Config>
+
+  <Config Name="Prometheus remote-write URL" Target="PROMETHEUS_REMOTE_WRITE_URL" Default="" Mode="" Description="Where vmagent ships samples. Must end in /api/v1/write and the receiver must run Prometheus 2.33+ with --web.enable-remote-write-receiver (or any compatible target — VictoriaMetrics, Grafana Cloud, Mimir, Cortex). Required — vmagent self-disables if unset." Type="Variable" Display="always" Required="true" Mask="false"></Config>
+
+  <Config Name="Prometheus bearer token" Target="PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN" Default="" Mode="" Description="Optional. Sent as `Authorization: Bearer …` on every remote_write. Use this OR the username/password pair, not both." Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
+
+  <Config Name="Prometheus basic-auth username" Target="PROMETHEUS_REMOTE_WRITE_USERNAME" Default="" Mode="" Description="Optional. Username for HTTP basic auth on the remote_write receiver. Mutually exclusive with the bearer token." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+
+  <Config Name="Prometheus basic-auth password" Target="PROMETHEUS_REMOTE_WRITE_PASSWORD" Default="" Mode="" Description="Optional. Password paired with the basic-auth username." Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
+
+  <Config Name="Skip TLS verify on remote_write" Target="PROMETHEUS_REMOTE_WRITE_TLS_INSECURE_SKIP_VERIFY" Default="" Mode="" Description="Set to 'true' if the remote_write receiver uses a self-signed cert. Leave blank otherwise." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
 </Container>

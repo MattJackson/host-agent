@@ -13,7 +13,10 @@
 # runc — harmless on hosts without nvidia-container-toolkit.
 services:
   host-agent:
-    image: registry.docker.pq.io/host-agent:latest
+    # Image source. Set HOST_AGENT_IMAGE in infra/.env (or the env) to
+    # a registry you can pull from — e.g. ghcr.io/<user>/host-agent:latest
+    # for an upstream build, or your own registry for an internal build.
+    image: ${HOST_AGENT_IMAGE:?HOST_AGENT_IMAGE must be set in infra/.env}
     container_name: host-agent
     restart: unless-stopped
     privileged: true
@@ -29,6 +32,18 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=utility
+      # Remote-write target for the embedded vmagent. Required —
+      # vmagent will refuse to start without a URL (sibling exporters
+      # still run, you just won't get metrics in your Prometheus). Set
+      # in infra/.env. The receiver must run Prometheus 2.33+ with
+      # --web.enable-remote-write-receiver, or any compatible TSDB
+      # (VictoriaMetrics, Grafana Mimir, Cortex, Grafana Cloud).
+      - PROMETHEUS_REMOTE_WRITE_URL=${PROMETHEUS_REMOTE_WRITE_URL:?PROMETHEUS_REMOTE_WRITE_URL must be set in infra/.env}
+      # Auth (optional; bearer XOR basic). See host-agent/s6/vmagent/run.
+      - PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN=${PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN:-}
+      - PROMETHEUS_REMOTE_WRITE_USERNAME=${PROMETHEUS_REMOTE_WRITE_USERNAME:-}
+      - PROMETHEUS_REMOTE_WRITE_PASSWORD=${PROMETHEUS_REMOTE_WRITE_PASSWORD:-}
+      - PROMETHEUS_REMOTE_WRITE_TLS_INSECURE_SKIP_VERIFY=${PROMETHEUS_REMOTE_WRITE_TLS_INSECURE_SKIP_VERIFY:-}
     # Mount set:
     #   /:/host:ro,rslave        — node-exporter rootfs/procfs view
     #   /sys:/sys:ro             — cadvisor reads /sys/fs/cgroup directly; even
