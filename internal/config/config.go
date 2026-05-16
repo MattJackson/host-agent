@@ -48,7 +48,7 @@ type Config struct {
 	HDDDeadband       int
 	HDDEmergency      int
 	HDDApproachWindow int
-	HDDReadInterval  int // seconds between smartctl polls
+	HDDReadInterval   int // seconds between smartctl polls
 
 	// SSD class — full PID (split off HDDs because their thermal envelope
 	// is 10-15°C wider).

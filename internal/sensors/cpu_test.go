@@ -24,15 +24,15 @@ func (a fstestAdapter) ReadDir(name string) ([]fs.DirEntry, error) {
 func TestCPU_Read_Coretemp(t *testing.T) {
 	// Two packages, 4 cores each, max @ P0.t3 = 72°C.
 	mfs := fstest.MapFS{
-		"sys/class/hwmon/hwmon0/name":       &fstest.MapFile{Data: []byte("coretemp\n")},
+		"sys/class/hwmon/hwmon0/name":        &fstest.MapFile{Data: []byte("coretemp\n")},
 		"sys/class/hwmon/hwmon0/temp1_input": &fstest.MapFile{Data: []byte("50000\n")},
 		"sys/class/hwmon/hwmon0/temp2_input": &fstest.MapFile{Data: []byte("55000\n")},
 		"sys/class/hwmon/hwmon0/temp3_input": &fstest.MapFile{Data: []byte("72000\n")},
-		"sys/class/hwmon/hwmon1/name":       &fstest.MapFile{Data: []byte("coretemp\n")},
+		"sys/class/hwmon/hwmon1/name":        &fstest.MapFile{Data: []byte("coretemp\n")},
 		"sys/class/hwmon/hwmon1/temp1_input": &fstest.MapFile{Data: []byte("48000\n")},
 		"sys/class/hwmon/hwmon1/temp2_input": &fstest.MapFile{Data: []byte("51000\n")},
 		// Distractor hwmon entry (e.g. ACPI thermal) — should be skipped.
-		"sys/class/hwmon/hwmon2/name":       &fstest.MapFile{Data: []byte("acpitz\n")},
+		"sys/class/hwmon/hwmon2/name":        &fstest.MapFile{Data: []byte("acpitz\n")},
 		"sys/class/hwmon/hwmon2/temp1_input": &fstest.MapFile{Data: []byte("40000\n")},
 	}
 	c := &CPU{Filesystem: fstestAdapter{mfs}, HwmonRoot: "/sys/class/hwmon"}

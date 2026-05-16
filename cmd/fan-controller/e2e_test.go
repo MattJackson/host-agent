@@ -127,4 +127,3 @@ func findRepoRoot(t *testing.T) string {
 	t.Fatal("could not find host-agent/profiles/default.env")
 	return ""
 }
-
