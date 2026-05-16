@@ -255,12 +255,16 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 	floors := c.proximityFloors(reading)
 	cpuPF, pgPF, agPF, hddPF, ssdPF := floors[0].Value, floors[1].Value, floors[2].Value, floors[3].Value, floors[4].Value
 
-	// Active-GPU assist (chassis-floor lift when active GPU > target).
+	// Active-GPU assist: chassis-floor lift driven by the card's OWN fan
+	// speed, not its die temperature. Card's own fan is quieter than the
+	// chassis; chassis stays out of the way until the card runs out of
+	// self-cooling headroom (own fan ≥ threshold). Die-temp safety is
+	// covered separately by ACTIVE_GPU_EMERGENCY in the emergency check.
 	agAssist := 0
 	if reading.ActiveGPUMax > 0 {
 		agAssist = control.ActiveGPUAssist(
-			reading.ActiveGPUMax, cfg.ActiveGPUTarget,
-			cfg.AssistGain, cfg.MinFan, cfg.MaxFan,
+			reading.ActiveGPUFanMax, cfg.ActiveGPUOwnFanThreshold,
+			cfg.MinFan, cfg.MaxFan,
 		)
 	}
 
@@ -319,37 +323,38 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 	}
 
 	snap := metrics.Snapshot{
-		CurrentSpeed:         c.CurrentSpeed,
-		BaseSpeed:            c.BaseSpeed,
-		Samples:              c.Samples,
-		CycleDurationSeconds: c.lastCycleDuration,
-		InEmergency:          0,
-		CPUMax:               reading.CPUMax,
-		PassiveGPUMax:        reading.PassiveGPUMax,
-		ActiveGPUMax:         reading.ActiveGPUMax,
-		HDDMax:               reading.HDDMax,
-		SSDMax:               reading.SSDMax,
-		CPUTarget:            cfg.CPUTarget,
-		PassiveGPUTarget:     cfg.GPUTarget,
-		ActiveGPUTarget:      cfg.ActiveGPUTarget,
-		HDDTarget:            cfg.HDDTarget,
-		SSDTarget:            cfg.SSDTarget,
-		CPUEmergency:         cfg.CPUEmergency,
-		PassiveGPUEmergency:  cfg.GPUEmergency,
-		ActiveGPUEmergency:   cfg.ActiveGPUEmergency,
-		HDDEmergency:         cfg.HDDEmergency,
-		SSDEmergency:         cfg.SSDEmergency,
-		CPUCand:              cpuCand,
-		PGCand:               pgCand,
-		HDDCand:              hddCand,
-		SSDCand:              ssdCand,
-		CPUPF:                cpuPF,
-		PGPF:                 pgPF,
-		AGPF:                 agPF,
-		HDDPF:                hddPF,
-		SSDPF:                ssdPF,
-		AGAssist:             agAssist,
-		Source:               r.Source,
+		CurrentSpeed:             c.CurrentSpeed,
+		BaseSpeed:                c.BaseSpeed,
+		Samples:                  c.Samples,
+		CycleDurationSeconds:     c.lastCycleDuration,
+		InEmergency:              0,
+		CPUMax:                   reading.CPUMax,
+		PassiveGPUMax:            reading.PassiveGPUMax,
+		ActiveGPUMax:             reading.ActiveGPUMax,
+		ActiveGPUFanMax:          reading.ActiveGPUFanMax,
+		HDDMax:                   reading.HDDMax,
+		SSDMax:                   reading.SSDMax,
+		CPUTarget:                cfg.CPUTarget,
+		PassiveGPUTarget:         cfg.GPUTarget,
+		HDDTarget:                cfg.HDDTarget,
+		SSDTarget:                cfg.SSDTarget,
+		CPUEmergency:             cfg.CPUEmergency,
+		PassiveGPUEmergency:      cfg.GPUEmergency,
+		ActiveGPUEmergency:       cfg.ActiveGPUEmergency,
+		ActiveGPUOwnFanThreshold: cfg.ActiveGPUOwnFanThreshold,
+		HDDEmergency:             cfg.HDDEmergency,
+		SSDEmergency:             cfg.SSDEmergency,
+		CPUCand:                  cpuCand,
+		PGCand:                   pgCand,
+		HDDCand:                  hddCand,
+		SSDCand:                  ssdCand,
+		CPUPF:                    cpuPF,
+		PGPF:                     pgPF,
+		AGPF:                     agPF,
+		HDDPF:                    hddPF,
+		SSDPF:                    ssdPF,
+		AGAssist:                 agAssist,
+		Source:                   r.Source,
 	}
 	_ = metrics.WriteAtomic(c.MetricsPath, snap)
 	return snap
@@ -372,9 +377,9 @@ func (c *Controller) proximityFloors(reading sensors.Reading) []control.MaxCandi
 	if reading.PassiveGPUMax > 0 {
 		floors[1].Value = control.ProximityFloor(reading.PassiveGPUMax, cfg.GPUEmergency, cfg.GPUApproachWindow, cfg.MinFan, cfg.MaxFan)
 	}
-	if reading.ActiveGPUMax > 0 {
-		floors[2].Value = control.ProximityFloor(reading.ActiveGPUMax, cfg.ActiveGPUEmergency, cfg.ActiveGPUApproachWindow, cfg.MinFan, cfg.MaxFan)
-	}
+	// Active GPU has no temperature-based proximity floor — own-fan-driven
+	// assist (see main loop) supersedes it. ag_pf stays 0 as a fixed slot
+	// for log/metric schema stability.
 	if reading.HDDMax > 0 {
 		floors[3].Value = control.ProximityFloor(reading.HDDMax, cfg.HDDEmergency, cfg.HDDApproachWindow, cfg.MinFan, cfg.MaxFan)
 	}
@@ -390,27 +395,28 @@ func (c *Controller) proximityFloors(reading sensors.Reading) []control.MaxCandi
 func (c *Controller) snapshotEmergency(reading sensors.Reading, source string) metrics.Snapshot {
 	cfg := c.Cfg
 	return metrics.Snapshot{
-		CurrentSpeed:         c.CurrentSpeed,
-		BaseSpeed:            c.BaseSpeed,
-		Samples:              c.Samples,
-		CycleDurationSeconds: c.lastCycleDuration,
-		InEmergency:          1,
-		CPUMax:               reading.CPUMax,
-		PassiveGPUMax:        reading.PassiveGPUMax,
-		ActiveGPUMax:         reading.ActiveGPUMax,
-		HDDMax:               reading.HDDMax,
-		SSDMax:               reading.SSDMax,
-		CPUTarget:            cfg.CPUTarget,
-		PassiveGPUTarget:     cfg.GPUTarget,
-		ActiveGPUTarget:      cfg.ActiveGPUTarget,
-		HDDTarget:            cfg.HDDTarget,
-		SSDTarget:            cfg.SSDTarget,
-		CPUEmergency:         cfg.CPUEmergency,
-		PassiveGPUEmergency:  cfg.GPUEmergency,
-		ActiveGPUEmergency:   cfg.ActiveGPUEmergency,
-		HDDEmergency:         cfg.HDDEmergency,
-		SSDEmergency:         cfg.SSDEmergency,
-		Source:               source,
+		CurrentSpeed:             c.CurrentSpeed,
+		BaseSpeed:                c.BaseSpeed,
+		Samples:                  c.Samples,
+		CycleDurationSeconds:     c.lastCycleDuration,
+		InEmergency:              1,
+		CPUMax:                   reading.CPUMax,
+		PassiveGPUMax:            reading.PassiveGPUMax,
+		ActiveGPUMax:             reading.ActiveGPUMax,
+		ActiveGPUFanMax:          reading.ActiveGPUFanMax,
+		HDDMax:                   reading.HDDMax,
+		SSDMax:                   reading.SSDMax,
+		CPUTarget:                cfg.CPUTarget,
+		PassiveGPUTarget:         cfg.GPUTarget,
+		HDDTarget:                cfg.HDDTarget,
+		SSDTarget:                cfg.SSDTarget,
+		CPUEmergency:             cfg.CPUEmergency,
+		PassiveGPUEmergency:      cfg.GPUEmergency,
+		ActiveGPUEmergency:       cfg.ActiveGPUEmergency,
+		ActiveGPUOwnFanThreshold: cfg.ActiveGPUOwnFanThreshold,
+		HDDEmergency:             cfg.HDDEmergency,
+		SSDEmergency:             cfg.SSDEmergency,
+		Source:                   source,
 	}
 }
 

@@ -15,8 +15,14 @@ type Reading struct {
 	CPUMax        int
 	PassiveGPUMax int
 	ActiveGPUMax  int
-	HDDMax        int
-	SSDMax        int
+	// ActiveGPUFanMax is the max OWN-fan-speed (%) across all active
+	// GPUs this cycle. Drives the chassis assist decision: chassis fans
+	// stay quiet until an active GPU's own fan is near max, signaling
+	// the card has run out of self-cooling headroom. 0 when no active
+	// GPU is present or fan speed couldn't be read.
+	ActiveGPUFanMax int
+	HDDMax          int
+	SSDMax          int
 	// Details is the human-readable per-sensor summary appended to the
 	// log line each cycle. Examples: "P0.t1:42 P0.t2:43 Gp0:75 d0h:33".
 	Details string

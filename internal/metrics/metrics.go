@@ -32,10 +32,12 @@ type Snapshot struct {
 	HDDMax        int
 	SSDMax        int
 
+	// Active GPU's max OWN fan speed (%) — what triggers chassis assist.
+	ActiveGPUFanMax int
+
 	// Per-class targets/emergencies (from config).
 	CPUTarget           int
 	PassiveGPUTarget    int
-	ActiveGPUTarget     int
 	HDDTarget           int
 	SSDTarget           int
 	CPUEmergency        int
@@ -43,6 +45,9 @@ type Snapshot struct {
 	ActiveGPUEmergency  int
 	HDDEmergency        int
 	SSDEmergency        int
+	// Active GPU has no temperature target — chassis-assist threshold
+	// is keyed off the card's OWN fan speed.
+	ActiveGPUOwnFanThreshold int
 
 	// Per-class PID candidates (0 in emergency).
 	CPUCand int
@@ -107,7 +112,6 @@ func Render(s Snapshot) []byte {
 	fmt.Fprintf(&b, "# TYPE fan_controller_class_target_celsius gauge\n")
 	fmt.Fprintf(&b, "fan_controller_class_target_celsius{class=\"cpu\"} %d\n", s.CPUTarget)
 	fmt.Fprintf(&b, "fan_controller_class_target_celsius{class=\"passive_gpu\"} %d\n", s.PassiveGPUTarget)
-	fmt.Fprintf(&b, "fan_controller_class_target_celsius{class=\"active_gpu\"} %d\n", s.ActiveGPUTarget)
 	fmt.Fprintf(&b, "fan_controller_class_target_celsius{class=\"hdd\"} %d\n", s.HDDTarget)
 	fmt.Fprintf(&b, "fan_controller_class_target_celsius{class=\"ssd\"} %d\n", s.SSDTarget)
 	fmt.Fprintf(&b, "\n")
@@ -134,9 +138,17 @@ func Render(s Snapshot) []byte {
 	fmt.Fprintf(&b, "fan_controller_class_proximity_floor_percent{class=\"hdd\"} %d\n", s.HDDPF)
 	fmt.Fprintf(&b, "fan_controller_class_proximity_floor_percent{class=\"ssd\"} %d\n", s.SSDPF)
 	fmt.Fprintf(&b, "\n")
-	fmt.Fprintf(&b, "# HELP fan_controller_active_gpu_assist_percent Active-GPU intake-air assist contribution to chassis floor.\n")
+	fmt.Fprintf(&b, "# HELP fan_controller_active_gpu_assist_percent Active-GPU intake-air assist contribution to chassis floor (driven by own-fan saturation).\n")
 	fmt.Fprintf(&b, "# TYPE fan_controller_active_gpu_assist_percent gauge\n")
 	fmt.Fprintf(&b, "fan_controller_active_gpu_assist_percent %d\n", s.AGAssist)
+	fmt.Fprintf(&b, "\n")
+	fmt.Fprintf(&b, "# HELP fan_controller_active_gpu_own_fan_percent Max own-fan speed (%%) across active GPUs this cycle. Compare to fan_controller_active_gpu_own_fan_threshold to see how much of the card's own self-cooling headroom remains.\n")
+	fmt.Fprintf(&b, "# TYPE fan_controller_active_gpu_own_fan_percent gauge\n")
+	fmt.Fprintf(&b, "fan_controller_active_gpu_own_fan_percent %d\n", s.ActiveGPUFanMax)
+	fmt.Fprintf(&b, "\n")
+	fmt.Fprintf(&b, "# HELP fan_controller_active_gpu_own_fan_threshold Own-fan %% at which chassis assist begins. Below this the chassis stays quiet — the card self-cools.\n")
+	fmt.Fprintf(&b, "# TYPE fan_controller_active_gpu_own_fan_threshold gauge\n")
+	fmt.Fprintf(&b, "fan_controller_active_gpu_own_fan_threshold %d\n", s.ActiveGPUOwnFanThreshold)
 	fmt.Fprintf(&b, "\n")
 	fmt.Fprintf(&b, "# HELP fan_controller_binding_source_info Which source bound the fan decision this cycle (max-wins). 1 for the active source.\n")
 	fmt.Fprintf(&b, "# TYPE fan_controller_binding_source_info gauge\n")

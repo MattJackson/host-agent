@@ -191,13 +191,13 @@ var trailingUnderscoreRE = regexp.MustCompile(`_+$`)
 // summarizing the resolved config. Matches the bash format so logwatch
 // patterns keep working.
 func logActiveProfile(l controller.Logger, cfg *config.Config) {
-	l.Printf("Active: CPU target=%d±%d emerg=%d°C win=%d | GPU(passive) target=%d±%d emerg=%d°C win=%d | GPU(active) assist=%d emerg=%d°C win=%d | HDD target=%d±%d emerg=%d°C win=%d read=%ds | FAN=%d-%d%% P=%v D=%v ASSIST_GAIN=%v DRIFT=%d%%/cyc INTERVAL=%ds ALPHA=%v",
+	l.Printf("Active: CPU target=%d±%d emerg=%d°C win=%d | GPU(passive) target=%d±%d emerg=%d°C win=%d | GPU(active) own_fan_thresh=%d%% emerg=%d°C | HDD target=%d±%d emerg=%d°C win=%d read=%ds | FAN=%d-%d%% P=%v D=%v DRIFT=%d%%/cyc INTERVAL=%ds ALPHA=%v",
 		cfg.CPUTarget, cfg.CPUDeadband, cfg.CPUEmergency, cfg.CPUApproachWindow,
 		cfg.GPUTarget, cfg.GPUDeadband, cfg.GPUEmergency, cfg.GPUApproachWindow,
-		cfg.ActiveGPUTarget, cfg.ActiveGPUEmergency, cfg.ActiveGPUApproachWindow,
+		cfg.ActiveGPUOwnFanThreshold, cfg.ActiveGPUEmergency,
 		cfg.HDDTarget, cfg.HDDDeadband, cfg.HDDEmergency, cfg.HDDApproachWindow, cfg.HDDReadInterval,
 		cfg.MinFan, cfg.MaxFan,
-		cfg.FanGain, cfg.DerivativeGain, cfg.AssistGain,
+		cfg.FanGain, cfg.DerivativeGain,
 		cfg.DeadbandDriftRate, cfg.IntervalSec, cfg.AdaptAlpha)
 }
 
@@ -216,9 +216,10 @@ func (c *compositeReader) Read(ctx context.Context) (sensors.Reading, bool) {
 		return sensors.Reading{}, false
 	}
 	r := sensors.Reading{CPUMax: cpuMax, Details: cpuDeets}
-	if pg, ag, deets, ok := c.gpu.Read(ctx); ok {
+	if pg, ag, agFan, deets, ok := c.gpu.Read(ctx); ok {
 		r.PassiveGPUMax = pg
 		r.ActiveGPUMax = ag
+		r.ActiveGPUFanMax = agFan
 		r.Details += deets
 	}
 	if hdd, ssd, deets, ok := c.smartctl.Read(ctx); ok {

@@ -66,10 +66,15 @@ func (g *GPU) summarize(ctx context.Context) string {
 	return strings.Join(names, ", ")
 }
 
-// Read returns (passiveMax, activeMax, details, ok). ok=false means
-// the GPU subsystem is disabled OR nvidia-smi returned no data — the
-// controller treats this identically to "no GPU temperatures this
-// cycle" via PID abstain semantics.
+// Read returns (passiveMax, activeMax, activeFanMax, details, ok).
+// ok=false means the GPU subsystem is disabled OR nvidia-smi returned
+// no data — the controller treats this identically to "no GPU readings
+// this cycle" via PID abstain semantics.
+//
+// activeFanMax is the max OWN-fan-speed (%) across all active GPUs this
+// cycle. Drives the chassis assist decision (see internal/control's
+// ActiveGPUAssist) — chassis stays quiet while every active card has
+// own-fan headroom.
 //
 // nvidia-smi CSV format:
 //
@@ -77,15 +82,15 @@ func (g *GPU) summarize(ctx context.Context) string {
 //	0, 75, [N/A]               (passive — no fan)
 //	1, 60, 80                  (active — own fan @ 80%)
 //	2, 55, [NotSupported]      (passive variant)
-func (g *GPU) Read(ctx context.Context) (passiveMax, activeMax int, details string, ok bool) {
+func (g *GPU) Read(ctx context.Context) (passiveMax, activeMax, activeFanMax int, details string, ok bool) {
 	if !g.Enabled {
-		return 0, 0, "", false
+		return 0, 0, 0, "", false
 	}
 	out, err := g.Runner.Run(ctx, "nvidia-smi",
 		"--query-gpu=index,temperature.gpu,fan.speed",
 		"--format=csv,noheader,nounits")
 	if err != nil {
-		return 0, 0, "", false
+		return 0, 0, 0, "", false
 	}
 	var b detailsBuilder
 	for _, line := range strings.Split(out, "\n") {
@@ -116,7 +121,11 @@ func (g *GPU) Read(ctx context.Context) (passiveMax, activeMax int, details stri
 			if temp > activeMax {
 				activeMax = temp
 			}
+			fanPct, err := strconv.Atoi(fan)
+			if err == nil && fanPct > activeFanMax {
+				activeFanMax = fanPct
+			}
 		}
 	}
-	return passiveMax, activeMax, b.String(), true
+	return passiveMax, activeMax, activeFanMax, b.String(), true
 }

@@ -178,31 +178,17 @@ func TestCycle_PassiveGPU_DrivesPID(t *testing.T) {
 	}
 }
 
-func TestCycle_ActiveGPU_AssistContributes(t *testing.T) {
+func TestCycle_ActiveGPU_OwnFanBelowThreshold_NoAssist(t *testing.T) {
 	cfg := defaultCfg(t)
-	// A5500 at 80°C — target 78, gain 3 → assist = MinFan + 2*3 = 26.
-	// Active-GPU proximity floor at 80: emergency=88, window=10 → outer
-	// edge at 78. diff = 80-78 = 2, f = 20 + (2/10)*80 = 36. So PF
-	// (36) > assist (26) → source=ag_pf. Pick a temp where assist wins.
-	//
-	// At 79°C: assist = 20 + 1*3 = 23. ag_pf: diff = 79-78 = 1,
-	// f = 20 + 0.1*80 = 28 → PF=28. Still PF wins.
-	//
-	// At 78°C (= target, NOT above): assist=0 (not above target).
-	//
-	// So below target, ag_pf is silent (diff=0 → MinFan); at target+1,
-	// ag_pf already kicks in. The two factors track each other.
-	// Pick a temp BELOW the PF outer edge — but the outer edge IS
-	// target, so they collide by design. Use a config where they differ:
-	cfg.ActiveGPUTarget = 70
-	cfg.ActiveGPUEmergency = 95
-	cfg.ActiveGPUApproachWindow = 5
-	// At 80°C, target=70, gain=3 → assist = 20 + 10*3 = 50.
-	// PF: outer edge = 95-5 = 90. 80 < 90 → PF=MinFan=20. Assist wins.
+	// A5500 at 84°C but own fan at 59% — well below the 85% threshold.
+	// Chassis should stay quiet; assist=0; source falls to whatever the
+	// CPU class candidate dictates.
 	reader := &stubReader{
 		readings: []sensors.Reading{{
-			ActiveGPUMax: 80,
-			Details:      "Ga0:80@65% ",
+			CPUMax:          54, // moderate, in deadband
+			ActiveGPUMax:    84,
+			ActiveGPUFanMax: 59,
+			Details:         "Ga0:84@59% ",
 		}},
 		oks: []bool{true},
 	}
@@ -211,14 +197,43 @@ func TestCycle_ActiveGPU_AssistContributes(t *testing.T) {
 	c.BaseSpeed = float64(cfg.MinFan)
 
 	snap := c.Cycle(context.Background())
-	if snap.AGAssist != 50 {
-		t.Errorf("ag_assist: got %d want 50", snap.AGAssist)
+	if snap.AGAssist != 0 {
+		t.Errorf("ag_assist (below threshold): got %d want 0", snap.AGAssist)
+	}
+	if snap.Source == "ag_assist" {
+		t.Errorf("source should NOT be ag_assist when below threshold, got %q", snap.Source)
+	}
+}
+
+func TestCycle_ActiveGPU_OwnFanAboveThreshold_AssistRamps(t *testing.T) {
+	cfg := defaultCfg(t)
+	// A5500 own fan at 92% — past 85% threshold. Card is working hard.
+	// threshold=85, ownFan=92 → progress (92-85)/(100-85) = 7/15
+	// span = MaxFan-MinFan = 100-20 = 80
+	// lift = round(7/15 * 80) = round(37.33) = 37
+	// assist = 20 + 37 = 57
+	reader := &stubReader{
+		readings: []sensors.Reading{{
+			CPUMax:          54,
+			ActiveGPUMax:    87,
+			ActiveGPUFanMax: 92,
+			Details:         "Ga0:87@92% ",
+		}},
+		oks: []bool{true},
+	}
+	c := newTestController(t, cfg, reader)
+	c.CurrentSpeed = cfg.MinFan
+	c.BaseSpeed = float64(cfg.MinFan)
+
+	snap := c.Cycle(context.Background())
+	if snap.AGAssist != 57 {
+		t.Errorf("ag_assist (own fan 92%%): got %d want 57", snap.AGAssist)
 	}
 	if snap.Source != "ag_assist" {
 		t.Errorf("source: got %q want ag_assist", snap.Source)
 	}
-	if snap.CurrentSpeed != 50 {
-		t.Errorf("setpoint should be ag_assist=50, got %d", snap.CurrentSpeed)
+	if snap.CurrentSpeed != 57 {
+		t.Errorf("setpoint should be ag_assist=57, got %d", snap.CurrentSpeed)
 	}
 }
 

@@ -30,7 +30,6 @@ fan_controller_class_temp_celsius{class="ssd"} 0
 # TYPE fan_controller_class_target_celsius gauge
 fan_controller_class_target_celsius{class="cpu"} 70
 fan_controller_class_target_celsius{class="passive_gpu"} 83
-fan_controller_class_target_celsius{class="active_gpu"} 78
 fan_controller_class_target_celsius{class="hdd"} 40
 fan_controller_class_target_celsius{class="ssd"} 50
 
@@ -57,9 +56,17 @@ fan_controller_class_proximity_floor_percent{class="active_gpu"} 0
 fan_controller_class_proximity_floor_percent{class="hdd"} 0
 fan_controller_class_proximity_floor_percent{class="ssd"} 0
 
-# HELP fan_controller_active_gpu_assist_percent Active-GPU intake-air assist contribution to chassis floor.
+# HELP fan_controller_active_gpu_assist_percent Active-GPU intake-air assist contribution to chassis floor (driven by own-fan saturation).
 # TYPE fan_controller_active_gpu_assist_percent gauge
 fan_controller_active_gpu_assist_percent 0
+
+# HELP fan_controller_active_gpu_own_fan_percent Max own-fan speed (%) across active GPUs this cycle. Compare to fan_controller_active_gpu_own_fan_threshold to see how much of the card's own self-cooling headroom remains.
+# TYPE fan_controller_active_gpu_own_fan_percent gauge
+fan_controller_active_gpu_own_fan_percent 0
+
+# HELP fan_controller_active_gpu_own_fan_threshold Own-fan % at which chassis assist begins. Below this the chassis stays quiet — the card self-cools.
+# TYPE fan_controller_active_gpu_own_fan_threshold gauge
+fan_controller_active_gpu_own_fan_threshold 85
 
 # HELP fan_controller_binding_source_info Which source bound the fan decision this cycle (max-wins). 1 for the active source.
 # TYPE fan_controller_binding_source_info gauge
