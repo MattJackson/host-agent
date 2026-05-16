@@ -6,7 +6,77 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
-## [0.1.0] — TBD
+## [0.1.3] — 2026-05-16
+
+### Changed
+
+- **Active-GPU chassis assist is now own-fan-driven, not temperature-driven.**
+  Workstation cards (A5500, RTX A6000, RTX 4000 SFF Ada, etc.) have their
+  own dual-axial fans designed to be quieter than chassis fans across the
+  card's working temp envelope. Previously the controller would lift
+  chassis fans when the active GPU temp exceeded `ACTIVE_GPU_TARGET=78`,
+  trading a quiet card-fan for louder chassis fans. The new policy: chassis
+  stays at zero assist while the card's OWN fan has self-cooling headroom;
+  only when own-fan crosses `ACTIVE_GPU_OWN_FAN_THRESHOLD` (default 85%) does
+  chassis ramp in, linearly from `MIN_FAN` to `MAX_FAN` as own-fan goes
+  85→100. `ACTIVE_GPU_EMERGENCY` (default 88°C) remains as a temperature-
+  based safety net for failed card-fan scenarios.
+- **Removed** `ACTIVE_GPU_TARGET`, `ACTIVE_GPU_APPROACH_WINDOW`,
+  `ASSIST_GAIN` env vars and the temperature-based active-GPU proximity
+  floor. The own-fan signal supersedes all of them. Old env entries are
+  silently ignored.
+
+### Added
+
+- `fan_controller_active_gpu_own_fan_percent` and
+  `fan_controller_active_gpu_own_fan_threshold` metrics exposed via the
+  textfile collector so dashboards can plot own-fan saturation vs threshold.
+
+### Migration
+
+No action needed. Existing deployments pick up the change automatically on
+container update; cold A5500 with own-fan <85% now produces zero chassis
+assist (quieter chassis), while a maxed-out card still gets help.
+
+## [0.1.2] — 2026-05-16
+
+### Added
+
+- **Natural Unraid drive order** in the bundled Grafana dashboard. The
+  `unraid-disks` sub-service now emits a `sort_key` label per slot
+  (parity → disk → cache → flash, with zero-padded numerics) and the
+  Drive Temperatures panel wraps its queries in `sort_by_label()` to
+  render drives in the same order Unraid's own UI uses.
+
+### Fixed
+
+- **Unraid Force Update no longer clears `PROMETHEUS_REMOTE_WRITE_URL`.**
+  The CA template's `Default=""` combined with `Required="true"` triggered
+  Unraid's saved-vs-default merge logic to revert the user-set URL on
+  every image redeploy. Replaced with a placeholder default
+  (`https://your-prometheus.example.com/api/v1/write`) so user values
+  persist across Force Updates.
+
+### Notes for receivers
+
+The bundled dashboard now uses `sort_by_label`, a PromQL function that
+Prometheus 3.x gates behind `--enable-feature=promql-experimental-functions`.
+The bundled `examples/server-side/` compose already sets the flag; users
+running their own Prometheus must add it manually.
+
+## [0.1.1] — 2026-05-16
+
+### Added
+
+- **`unraid-disks` textfile sub-service** emits `unraid_disk_info{device,slot}`
+  mapping Unraid's array slot labels (`disk1`, `parity`, `cache`, ...) to
+  Linux device names by parsing `/host/var/local/emhttp/disks.ini`. The
+  Drive Temperatures panel joins on `(host, device)` so Unraid drives
+  show the same bay names the Unraid UI uses (`disk1 HDD`, `cache SSD`)
+  instead of bare Linux device letters.
+- Self-disables cleanly on non-Unraid hosts (probes `/host/etc/unraid-version`).
+
+## [0.1.0] — 2026-05-16
 
 First public release.
 
@@ -35,5 +105,8 @@ First public release.
 - **Server-side example compose** in `examples/server-side/` — minimal
   Prometheus + Grafana receiver to get a fresh user end-to-end in ~5 min.
 
-[Unreleased]: https://github.com/mattjackson/host-agent/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/mattjackson/host-agent/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.3
+[0.1.2]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.2
+[0.1.1]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.1
 [0.1.0]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.0

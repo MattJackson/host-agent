@@ -264,34 +264,56 @@ func TestEwma_HalfLifeApprox(t *testing.T) {
 	}
 }
 
-func TestActiveGPUAssist_BelowTargetReturnsZero(t *testing.T) {
-	// temp <= target → no assist, no chassis floor lift.
-	got := ActiveGPUAssist(75, 78, 3.0, 20, 100)
+func TestActiveGPUAssist_BelowThresholdReturnsZero(t *testing.T) {
+	// Active GPU's own fan is below the assist threshold → chassis
+	// stays out of the way. The card is self-managing.
+	got := ActiveGPUAssist(0, 85, 10, 100)
 	if got != 0 {
-		t.Errorf("below target: got %d want 0", got)
+		t.Errorf("ownFan=0 below threshold: got %d want 0", got)
 	}
-	got = ActiveGPUAssist(78, 78, 3.0, 20, 100)
+	got = ActiveGPUAssist(50, 85, 10, 100)
 	if got != 0 {
-		t.Errorf("at target: got %d want 0", got)
+		t.Errorf("ownFan=50 below threshold: got %d want 0", got)
+	}
+	got = ActiveGPUAssist(84, 85, 10, 100)
+	if got != 0 {
+		t.Errorf("ownFan=threshold-1: got %d want 0", got)
 	}
 }
 
-func TestActiveGPUAssist_AboveTarget_LiftsChassisFloor(t *testing.T) {
-	// target=78, gain=3 → A5500 at 82 lifts by 4*3=12, on top of MinFan=20.
-	got := ActiveGPUAssist(82, 78, 3.0, 20, 100)
-	if got != 32 {
-		t.Errorf("4 above target: got %d want 32", got)
+func TestActiveGPUAssist_AtThreshold_StartsAtMinFan(t *testing.T) {
+	// ownFan == threshold → start of ramp at MinFan.
+	got := ActiveGPUAssist(85, 85, 10, 100)
+	if got != 10 {
+		t.Errorf("ownFan=threshold: got %d want MinFan=10", got)
 	}
-	// At 88 (= emergency, but assist still computed pre-emergency check):
-	// 10°C overshoot * 3 = 30 lift → 50.
-	got = ActiveGPUAssist(88, 78, 3.0, 20, 100)
-	if got != 50 {
-		t.Errorf("10 above target: got %d want 50", got)
-	}
-	// Very hot card: assist clamps to MaxFan.
-	got = ActiveGPUAssist(120, 78, 3.0, 20, 100)
+}
+
+func TestActiveGPUAssist_AtMax_ReachesMaxFan(t *testing.T) {
+	// ownFan=100 → maxFan. Card is at full self-cooling, chassis goes max.
+	got := ActiveGPUAssist(100, 85, 10, 100)
 	if got != 100 {
-		t.Errorf("clamp to MaxFan: got %d want 100", got)
+		t.Errorf("ownFan=100: got %d want MaxFan=100", got)
+	}
+}
+
+func TestActiveGPUAssist_LinearRampMidpoint(t *testing.T) {
+	// threshold=85, ownFan=92 → 50%ish through the 85→100 ramp.
+	// Progress = (92-85)/(100-85) = 7/15 ≈ 0.467
+	// Span = 100-10 = 90
+	// Lift = round(0.467 * 90) = round(42) = 42
+	// Result = 10 + 42 = 52
+	got := ActiveGPUAssist(92, 85, 10, 100)
+	if got != 52 {
+		t.Errorf("ownFan=92 midpoint: got %d want 52", got)
+	}
+}
+
+func TestActiveGPUAssist_ClampsAboveHundred(t *testing.T) {
+	// Defensive: ownFan > 100 (shouldn't happen but tolerate) clamps to maxFan.
+	got := ActiveGPUAssist(150, 85, 10, 100)
+	if got != 100 {
+		t.Errorf("ownFan=150 (defensive clamp): got %d want 100", got)
 	}
 }
 

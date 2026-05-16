@@ -40,7 +40,7 @@ func TestGPU_Read_PassiveAndActive(t *testing.T) {
 	})
 
 	g := &GPU{Runner: r, Enabled: true}
-	passive, active, deets, ok := g.Read(context.Background())
+	passive, active, activeFan, deets, ok := g.Read(context.Background())
 	if !ok {
 		t.Fatal("Read ok=false")
 	}
@@ -49,6 +49,9 @@ func TestGPU_Read_PassiveAndActive(t *testing.T) {
 	}
 	if active != 65 {
 		t.Errorf("active max: got %d want 65", active)
+	}
+	if activeFan != 80 {
+		t.Errorf("active fan max: got %d want 80", activeFan)
 	}
 	for _, want := range []string{"Gp0:72", "Gp1:75", "Ga2:65@80%"} {
 		if !contains(deets, want) {
@@ -59,7 +62,7 @@ func TestGPU_Read_PassiveAndActive(t *testing.T) {
 
 func TestGPU_Read_DisabledReturnsNotOk(t *testing.T) {
 	g := &GPU{Enabled: false}
-	_, _, _, ok := g.Read(context.Background())
+	_, _, _, _, ok := g.Read(context.Background())
 	if ok {
 		t.Error("disabled GPU should return ok=false")
 	}

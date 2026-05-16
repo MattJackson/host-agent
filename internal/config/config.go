@@ -37,11 +37,11 @@ type Config struct {
 	GPUEmergency      int
 	GPUApproachWindow int
 
-	// Active GPU class — assist only (no PID candidate), plus its own
-	// emergency threshold.
-	ActiveGPUTarget         int
-	ActiveGPUEmergency      int
-	ActiveGPUApproachWindow int
+	// Active GPU class — own-fan-driven assist. Chassis stays out of
+	// the way as long as the card's own fan can self-cool; only when
+	// the card's fan saturates does chassis ramp in.
+	ActiveGPUOwnFanThreshold int // %. Chassis assist kicks in at/above this own-fan %.
+	ActiveGPUEmergency       int // °C. Hard safety: any active GPU at/above this → fans 100%.
 
 	// HDD class — full PID.
 	HDDTarget         int
@@ -62,7 +62,6 @@ type Config struct {
 	MaxFan            int
 	FanGain           float64
 	DerivativeGain    float64
-	AssistGain        float64
 	DeadbandDriftRate int
 	AdaptAlpha        float64
 
@@ -165,11 +164,11 @@ func Load(profileDir, model string, lookupEnv func(string) (string, bool), logge
 		envOverlay(k)
 	}
 	for _, k := range []string{"INTERVAL", "GPU_AWARE", "HDD_AWARE",
-		"MIN_FAN", "MAX_FAN", "FAN_GAIN", "DERIVATIVE_GAIN", "ASSIST_GAIN",
+		"MIN_FAN", "MAX_FAN", "FAN_GAIN", "DERIVATIVE_GAIN",
 		"DEADBAND_DRIFT_RATE", "ADAPT_ALPHA",
 		"CPU_TARGET", "CPU_DEADBAND", "CPU_EMERGENCY", "CPU_APPROACH_WINDOW",
 		"GPU_TARGET", "GPU_DEADBAND", "GPU_EMERGENCY", "GPU_APPROACH_WINDOW",
-		"ACTIVE_GPU_TARGET", "ACTIVE_GPU_EMERGENCY", "ACTIVE_GPU_APPROACH_WINDOW",
+		"ACTIVE_GPU_OWN_FAN_THRESHOLD", "ACTIVE_GPU_EMERGENCY",
 		"HDD_TARGET", "HDD_DEADBAND", "HDD_EMERGENCY", "HDD_APPROACH_WINDOW", "HDD_READ_INTERVAL",
 		"SSD_TARGET", "SSD_DEADBAND", "SSD_EMERGENCY", "SSD_APPROACH_WINDOW",
 	} {
@@ -192,9 +191,8 @@ func Load(profileDir, model string, lookupEnv func(string) (string, bool), logge
 	bindInt(raw, "GPU_EMERGENCY", &cfg.GPUEmergency)
 	bindInt(raw, "GPU_APPROACH_WINDOW", &cfg.GPUApproachWindow)
 
-	bindInt(raw, "ACTIVE_GPU_TARGET", &cfg.ActiveGPUTarget)
+	bindInt(raw, "ACTIVE_GPU_OWN_FAN_THRESHOLD", &cfg.ActiveGPUOwnFanThreshold)
 	bindInt(raw, "ACTIVE_GPU_EMERGENCY", &cfg.ActiveGPUEmergency)
-	bindInt(raw, "ACTIVE_GPU_APPROACH_WINDOW", &cfg.ActiveGPUApproachWindow)
 
 	bindInt(raw, "HDD_TARGET", &cfg.HDDTarget)
 	bindInt(raw, "HDD_DEADBAND", &cfg.HDDDeadband)
@@ -211,7 +209,6 @@ func Load(profileDir, model string, lookupEnv func(string) (string, bool), logge
 	bindInt(raw, "MAX_FAN", &cfg.MaxFan)
 	bindFloat(raw, "FAN_GAIN", &cfg.FanGain)
 	bindFloat(raw, "DERIVATIVE_GAIN", &cfg.DerivativeGain)
-	bindFloat(raw, "ASSIST_GAIN", &cfg.AssistGain)
 	bindInt(raw, "DEADBAND_DRIFT_RATE", &cfg.DeadbandDriftRate)
 	bindFloat(raw, "ADAPT_ALPHA", &cfg.AdaptAlpha)
 

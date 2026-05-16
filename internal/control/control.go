@@ -124,25 +124,40 @@ func Ewma(prev, sample, alpha float64) float64 {
 	return (1.0-alpha)*prev + alpha*sample
 }
 
-// ActiveGPUAssist returns the chassis floor lift caused by an active
-// GPU exceeding its target. Returns 0 when temp <= target — no assist
-// needed.
+// ActiveGPUAssist returns the chassis floor lift for an active GPU
+// based on the card's OWN fan speed — not die temperature.
 //
-// When temp > target:
+// The active GPU's own fan is the authoritative signal of whether the
+// card needs help: as long as it can self-cool with headroom, chassis
+// fans should stay quiet (workstation card own-fans are designed to be
+// quieter than chassis fans). Only when the card's fan is near max
+// does it need outside help moving heat out of its inlet air.
 //
-//	assist = MinFan + round(overshoot * AssistGain), clamped to MaxFan.
+// Returns 0 while ownFan < threshold ("card is self-managing fine").
+// At/above threshold, ramps linearly from minFan to maxFan as ownFan
+// climbs from threshold → 100.
 //
-// "Assist" semantics: chassis fans can't cool the active GPU's die
-// directly, but they can cool the intake air the card's own fan pulls
-// in. The lift contributes to the max()-wins binding in the main loop.
-func ActiveGPUAssist(temp, target int, assistGain float64, minFan, maxFan int) int {
-	if temp <= target {
+// die_temp is intentionally absent — ACTIVE_GPU_EMERGENCY is the
+// temperature-based safety net handled separately in the main loop
+// (catches dead-fan failures where ownFan reads normal but temp climbs).
+func ActiveGPUAssist(ownFan, threshold, minFan, maxFan int) int {
+	if ownFan < threshold {
 		return 0
 	}
-	overshoot := temp - target
-	lift := roundHalfAway(float64(overshoot) * assistGain)
-	cand := minFan + lift
-	return clamp(cand, minFan, maxFan)
+	if threshold >= 100 {
+		// Degenerate: only activate at exactly 100% own-fan.
+		if ownFan >= 100 {
+			return maxFan
+		}
+		return 0
+	}
+	if ownFan > 100 {
+		ownFan = 100
+	}
+	span := float64(maxFan - minFan)
+	progress := float64(ownFan-threshold) / float64(100-threshold)
+	lift := roundHalfAway(progress * span)
+	return clamp(minFan+lift, minFan, maxFan)
 }
 
 // MaxWinsResult is the outcome of the max-across-candidates aggregation
