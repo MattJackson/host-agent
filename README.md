@@ -34,6 +34,8 @@ Each sub-service probes its hardware on start and self-disables if its prerequis
 
 ## Quick start
 
+> **On Unraid?** Skip this block and go straight to [Option C](#option-c--unraid-xml-template-direct-from-github) — the install path is different (and simpler) because the URL lives in appdata, not env.
+
 ```sh
 # 1. Pick where you're pushing metrics.
 export HOST_AGENT_IMAGE=ghcr.io/mattjackson/host-agent:latest
@@ -139,6 +141,8 @@ curl -sfLO --output-dir /boot/config/plugins/dockerMan/templates-user \
 That's it. No env vars to fill in. If your Prometheus needs auth, toggle **Advanced View** in the form to expose the optional bearer-token / basic-auth / TLS-skip fields.
 
 All paths and the `--cgroupns=host` flag are pre-baked into the template. To get listed in Community Applications search, submit the XML to [Squidly271/AppFeed](https://github.com/Squidly271/AppFeed) — not required for personal use.
+
+**Future updates** — just click **Force Update** in the Docker tab. The URL is in appdata; Unraid can't lose it. If a release adds new template fields (rare), the release notes will tell you to re-run the curl above; otherwise leave the template alone.
 
 ### Option D — `install.sh` one-shot (curl-pipe)
 
