@@ -14,11 +14,17 @@
     smartctl-exporter, ipmi-exporter, nvidia-gpu-exporter, an adaptive
     Dell PowerEdge fan controller, and vmagent.
 
-    vmagent scrapes every sub-exporter on localhost and pushes samples
-    via Prometheus remote_write. Set PROMETHEUS_REMOTE_WRITE_URL to
-    your receiver's /api/v1/write endpoint (Prometheus, VictoriaMetrics,
-    Grafana Cloud, Mimir, etc.); optional bearer or basic auth via the
-    other PROMETHEUS_REMOTE_WRITE_* env vars.
+    SETUP (one-time, via SSH):
+
+      mkdir -p /mnt/user/appdata/host-agent/config
+      echo 'http://your-prometheus:9090/api/v1/write' \
+        > /mnt/user/appdata/host-agent/config/remote_write_url
+
+    vmagent reads the URL from that file. Set it once and it survives
+    every container update, image bump, and template re-curl — because
+    the appdata mount is the persistence boundary. (Optional bearer or
+    basic auth via the PROMETHEUS_REMOTE_WRITE_* env vars below for
+    receivers that need it.)
 
     external_labels.host is the box's kernel hostname, so the dashboard
     sees a new host the moment its first push lands — no central
@@ -54,8 +60,6 @@
   <Config Name="Host devices" Target="/dev" Default="/dev" Mode="rw" Description="Direct passthrough of host /dev. ipmitool and smartctl talk to /dev/ipmi0 and /dev/sd* / /dev/bus/0 directly — Docker doesn't auto-share host devices even with Privileged on. Leave the default." Type="Path" Display="advanced-hide" Required="true" Mask="false">/dev</Config>
 
   <Config Name="State directory" Target="/var/lib/fan-controller" Default="/mnt/user/appdata/host-agent" Mode="rw" Description="Persistent state for the Dell fan controller's EWMA baseline (takes 24–48 h to learn) and the vmagent write-ahead log. Pre-filled; advanced field — no need to touch." Type="Path" Display="advanced-hide" Required="true" Mask="false">/mnt/user/appdata/host-agent</Config>
-
-  <Config Name="Prometheus remote-write URL" Target="PROMETHEUS_REMOTE_WRITE_URL" Default="https://your-prometheus.example.com/api/v1/write" Mode="" Description="REQUIRED. Where vmagent ships samples. Must end in /api/v1/write and the receiver must run Prometheus 2.33+ with --web.enable-remote-write-receiver (or any compatible target — VictoriaMetrics, Grafana Cloud, Mimir, Cortex). Replace the example.com placeholder with your real receiver. TIP: if Force Update ever resets this field back to the placeholder, write your URL to /mnt/user/appdata/host-agent/config/remote_write_url instead — the container reads from there as a fallback and the file survives every update. vmagent self-disables (no metric push) if neither is set." Type="Variable" Display="always" Required="true" Mask="false">https://your-prometheus.example.com/api/v1/write</Config>
 
   <Config Name="Prometheus bearer token" Target="PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN" Default="" Mode="" Description="Optional. Sent as `Authorization: Bearer …` on every remote_write. Use this OR the username/password pair, not both." Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
 

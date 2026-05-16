@@ -6,6 +6,27 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-05-16
+
+### Changed
+
+- **Unraid template no longer has a `PROMETHEUS_REMOTE_WRITE_URL` field.**
+  After v0.1.4 added the persistent file fallback, the template's URL
+  env var became redundant — and worse, the second path was the one
+  Force Update kept clobbering. v0.1.5 drops the env field from the
+  template entirely. Setup is now a single SSH one-liner that creates
+  both the appdata URL file and fetches the template; the web-UI step
+  has zero required fields to fill in.
+- Container code unchanged from v0.1.4 — env var still works for
+  Docker/compose deploys where the template-UI dance doesn't apply.
+
+### Migration
+
+Existing Unraid installs that already have a URL file at
+`/mnt/user/appdata/host-agent/config/remote_write_url` keep working.
+Future Force Updates won't try to wipe the env field because the
+field doesn't exist.
+
 ## [0.1.4] — 2026-05-16
 
 ### Fixed
@@ -126,7 +147,8 @@ First public release.
 - **Server-side example compose** in `examples/server-side/` — minimal
   Prometheus + Grafana receiver to get a fresh user end-to-end in ~5 min.
 
-[Unreleased]: https://github.com/mattjackson/host-agent/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/mattjackson/host-agent/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.5
 [0.1.4]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.4
 [0.1.3]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.3
 [0.1.2]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.2
