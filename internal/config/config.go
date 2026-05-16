@@ -1,4 +1,4 @@
-// Package config loads dell-fans profile files. The profile system
+// Package config loads fan-controller profile files. The profile system
 // mirrors `set -a; . profile.env; set +a` semantics with `${KEY:=value}`
 // defaults: env > model-specific profile > default.env. First-set wins.
 //

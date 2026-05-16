@@ -13,14 +13,14 @@ per-host action.
 
 | sub-service | port | runs when | otherwise |
 |---|---|---|---|
-| `dell-fans` controller | — | `/dev/ipmi0` exists AND BMC is Dell | sleep |
+| `fan-controller` | — | `/dev/ipmi0` exists AND BMC is Dell | sleep |
 | `node_exporter` | 9100 | always | always |
 | `cadvisor` | 8089 | `/var/run/docker.sock` mounted | sleep |
 | `ipmi_exporter` | 9290 | `/dev/ipmi0` exists | sleep |
 | `smartctl_exporter` | 9633 | always (auto-discovers) | always |
 | `nvidia_gpu_exporter` | 9835 | `nvidia-smi` is present | sleep |
 
-`node_exporter`'s `--collector.textfile.directory` is `/var/lib/dell-fans/state`,
+`node_exporter`'s `--collector.textfile.directory` is `/var/lib/fan-controller/state`,
 which is where the fan controller writes its own `metrics.prom` each
 cycle — so controller state (setpoints, per-class temps, EWMA baseline,
 binding source) is exposed to Prometheus through node-exporter on the
@@ -47,7 +47,7 @@ services:
       - /dev:/dev
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/lib/docker:/var/lib/docker:ro
-      - /var/lib/dell-fans:/var/lib/dell-fans
+      - /var/lib/fan-controller:/var/lib/fan-controller
     labels:
       - com.centurylinklabs.watchtower.enable=true
 ```
@@ -58,7 +58,7 @@ injects `nvidia-smi` at start. Default is `runc`, which is harmless on
 hosts without nvidia-container-toolkit.
 
 **One-time host setup**: load the IPMI kernel module on Dell hosts, and
-make sure `/var/lib/dell-fans` exists. `infra/host-requirements.sh`
+make sure `/var/lib/fan-controller` exists. `infra/host-requirements.sh`
 does this — DR runs it automatically; on a new host run it once by
 hand.
 
@@ -102,7 +102,7 @@ Dockerfile — bump those and commit to roll forward.
 Replaces iDRAC's automatic curve with three independent per-class PIDs
 (CPU + passive GPU + HDD); the worst-offender class wins each cycle.
 Self-tunes its baseline (EWMA persisted to
-`/var/lib/dell-fans/state/`) over 24–48 hrs.
+`/var/lib/fan-controller/state/`) over 24–48 hrs.
 
 Inner loop runs every `INTERVAL=15s`:
 
@@ -180,7 +180,7 @@ sudo docker logs host-agent --tail 50 -f
 
 **Controller state**:
 ```sh
-sudo cat /var/lib/dell-fans/state/base
+sudo cat /var/lib/fan-controller/state/base
 # base_speed=22.4515   ← EWMA of equilibrium fan speed
 # last_speed=45        ← actual fan speed at last write
 # samples=109          ← cycles since restart
@@ -198,11 +198,11 @@ host-agent/
 ├── README.md                    # this file
 ├── Dockerfile                   # multi-stage: go-builder + exporter-fetch + s6-overlay
 ├── go.mod                       # zero external deps; vendor-free build
-├── cmd/dell-fans/               # controller entry point
+├── cmd/fan-controller/               # controller entry point
 ├── internal/                    # PID/proximity/EWMA + sensors + IPMI + state + metrics
 ├── profiles/                    # per-chassis tuning (r730xd, r730, r410, xc730xd-12, default)
 ├── s6/                          # s6-overlay service tree
-│   ├── dell-fans/               (controller)
+│   ├── fan-controller/               (controller)
 │   ├── node-exporter/           (:9100)
 │   ├── cadvisor/                (:8089)
 │   ├── ipmi-exporter/           (:9290)

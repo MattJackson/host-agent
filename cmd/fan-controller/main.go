@@ -1,8 +1,8 @@
-// dell-fan-controller — Dell PowerEdge adaptive fan controller.
+// fan-controller — Dell PowerEdge adaptive fan controller.
 // Per-class PIDs (CPU, passive_gpu, active_gpu, hdd, ssd) emit
 // candidate fan speeds; max() wins, plus per-class proximity floors
 // and an active-GPU assist lift. EWMA-tracked equilibrium baseline
-// persisted to /var/lib/dell-fans/state/base. See host-agent/README.md.
+// persisted to /var/lib/fan-controller/state/base. See host-agent/README.md.
 package main
 
 import (
@@ -29,10 +29,10 @@ import (
 var version = "dev"
 
 const (
-	profileDir  = "/etc/dell-fans/profiles"
-	stateDir    = "/var/lib/dell-fans/state"
-	stateFile   = "/var/lib/dell-fans/state/base"
-	metricsFile = "/var/lib/dell-fans/state/metrics.prom"
+	profileDir  = "/etc/fan-controller/profiles"
+	stateDir    = "/var/lib/fan-controller/state"
+	stateFile   = "/var/lib/fan-controller/state/base"
+	metricsFile = "/var/lib/fan-controller/state/metrics.prom"
 )
 
 // stdLogger emits the bash log line format: "YYYY-MM-DD HH:MM:SS - msg".

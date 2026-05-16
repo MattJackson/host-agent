@@ -43,7 +43,7 @@ services:
     #   /var/lib/docker:ro       — cadvisor reads container metadata from here.
     #   /dev:/dev                — ipmitool + smartctl hardcode /dev/* paths and
     #                              Docker doesn't auto-import host devices.
-    #   /var/lib/dell-fans       — fan EWMA baseline + vmagent WAL persistence.
+    #   /var/lib/fan-controller       — fan EWMA baseline + vmagent WAL persistence.
     volumes:
       - /:/host:ro,rslave
       - /sys:/sys:ro
@@ -55,6 +55,6 @@ services:
       - /run/containerd:/run/containerd:ro
       - /var/lib/docker:/var/lib/docker:ro
       - /dev:/dev
-      - /var/lib/dell-fans:/var/lib/dell-fans
+      - /var/lib/fan-controller:/var/lib/fan-controller
     labels:
       - "com.centurylinklabs.watchtower.enable=true"

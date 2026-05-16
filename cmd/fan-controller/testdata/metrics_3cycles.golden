@@ -1,0 +1,66 @@
+# HELP fan_controller_fan_setpoint_percent Current chassis fan setpoint commanded by controller.
+# TYPE fan_controller_fan_setpoint_percent gauge
+fan_controller_fan_setpoint_percent 36
+
+# HELP fan_controller_base_speed_percent EWMA-smoothed baseline fan speed (24-48h adaptation).
+# TYPE fan_controller_base_speed_percent gauge
+fan_controller_base_speed_percent 20.0240
+
+# HELP fan_controller_samples_total Number of decision cycles since controller start.
+# TYPE fan_controller_samples_total counter
+fan_controller_samples_total 3
+
+# HELP fan_controller_cycle_duration_seconds Wall-clock seconds for the most recent main-loop cycle (get_temps + PIDs + proximity_floor + max() + set_fan, NOT including sleep INTERVAL).
+# TYPE fan_controller_cycle_duration_seconds gauge
+fan_controller_cycle_duration_seconds 0
+
+# HELP fan_controller_emergency_active Whether the controller is in emergency state (1=yes, 0=no).
+# TYPE fan_controller_emergency_active gauge
+fan_controller_emergency_active 0
+
+# HELP fan_controller_class_temp_celsius Max temperature observed for a hardware class this cycle.
+# TYPE fan_controller_class_temp_celsius gauge
+fan_controller_class_temp_celsius{class="cpu"} 72
+fan_controller_class_temp_celsius{class="passive_gpu"} 0
+fan_controller_class_temp_celsius{class="active_gpu"} 0
+fan_controller_class_temp_celsius{class="hdd"} 0
+fan_controller_class_temp_celsius{class="ssd"} 0
+
+# HELP fan_controller_class_target_celsius Per-class target temperature (deadband center) or assist threshold.
+# TYPE fan_controller_class_target_celsius gauge
+fan_controller_class_target_celsius{class="cpu"} 70
+fan_controller_class_target_celsius{class="passive_gpu"} 83
+fan_controller_class_target_celsius{class="active_gpu"} 78
+fan_controller_class_target_celsius{class="hdd"} 40
+fan_controller_class_target_celsius{class="ssd"} 50
+
+# HELP fan_controller_class_emergency_celsius Per-class emergency threshold — instant fans=100%.
+# TYPE fan_controller_class_emergency_celsius gauge
+fan_controller_class_emergency_celsius{class="cpu"} 80
+fan_controller_class_emergency_celsius{class="passive_gpu"} 90
+fan_controller_class_emergency_celsius{class="active_gpu"} 88
+fan_controller_class_emergency_celsius{class="hdd"} 50
+fan_controller_class_emergency_celsius{class="ssd"} 65
+
+# HELP fan_controller_class_candidate_percent Per-class PID candidate fan speed. max() across all classes drives fans.
+# TYPE fan_controller_class_candidate_percent gauge
+fan_controller_class_candidate_percent{class="cpu"} 36
+fan_controller_class_candidate_percent{class="passive_gpu"} 0
+fan_controller_class_candidate_percent{class="hdd"} 0
+fan_controller_class_candidate_percent{class="ssd"} 0
+
+# HELP fan_controller_class_proximity_floor_percent Per-class proximity-to-emergency floor (silent until temp enters approach window).
+# TYPE fan_controller_class_proximity_floor_percent gauge
+fan_controller_class_proximity_floor_percent{class="cpu"} 36
+fan_controller_class_proximity_floor_percent{class="passive_gpu"} 0
+fan_controller_class_proximity_floor_percent{class="active_gpu"} 0
+fan_controller_class_proximity_floor_percent{class="hdd"} 0
+fan_controller_class_proximity_floor_percent{class="ssd"} 0
+
+# HELP fan_controller_active_gpu_assist_percent Active-GPU intake-air assist contribution to chassis floor.
+# TYPE fan_controller_active_gpu_assist_percent gauge
+fan_controller_active_gpu_assist_percent 0
+
+# HELP fan_controller_binding_source_info Which source bound the fan decision this cycle (max-wins). 1 for the active source.
+# TYPE fan_controller_binding_source_info gauge
+fan_controller_binding_source_info{source="cpu"} 1

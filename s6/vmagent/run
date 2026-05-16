@@ -11,7 +11,7 @@
 #
 # Per-chassis sensor normalization: same `profiles/<model>.env` files
 # the fan controller uses, extended with SENSOR_* vars. We auto-detect
-# the chassis via dmidecode (same as dell-fan-controller's detect_model),
+# the chassis via dmidecode (same as fan-controller's detect_model),
 # source the matching profile, and emit metric_relabel_configs that
 # stamp a stable `class` label (cpu1/cpu2/inlet/exhaust) onto whichever
 # IPMI sensor matches on this box. Dashboard queries {class="cpu1"}
@@ -22,13 +22,13 @@
 
 REMOTE_WRITE_URL="http://docker-1.internal.pq.io:9090/api/v1/write"
 HOSTNAME_LABEL="$(hostname -s)"
-WAL_DIR=/var/lib/dell-fans/vmagent-wal
-PROFILE_DIR=/etc/dell-fans/profiles
+WAL_DIR=/var/lib/fan-controller/vmagent-wal
+PROFILE_DIR=/etc/fan-controller/profiles
 
 # Image build version (short git SHA, written at build time).
 VERSION_LABEL="$(cat /etc/host-agent-version 2>/dev/null || echo dev)"
 
-# detect_model: matches cmd/dell-fans/main.go#detectModel exactly so
+# detect_model: matches cmd/fan-controller/main.go#detectModel exactly so
 # vmagent loads the same profile the fan controller does. Must run
 # BEFORE the host_agent_info write so MODEL/PROFILE_FILE are populated.
 detect_model() {
@@ -53,7 +53,7 @@ set -a; . "$PROFILE_DIR/default.env"; set +a
 # Write host_agent_info textfile NOW that MODEL/PROFILE_FILE are known.
 # node-exporter's textfile collector picks it up as
 # host_agent_info{version,chassis,profile} = 1.
-TEXTFILE_DIR=/var/lib/dell-fans/state
+TEXTFILE_DIR=/var/lib/fan-controller/state
 mkdir -p "$TEXTFILE_DIR"
 cat > "$TEXTFILE_DIR/.host_agent_info.prom.tmp" <<EOF
 # HELP host_agent_info Build version + detected chassis profile for the host-agent container.

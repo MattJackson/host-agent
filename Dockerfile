@@ -1,6 +1,6 @@
 # Unified host-agent image. One container, s6-supervised, bundles:
 #
-#   dell-fans controller   — adaptive Dell PowerEdge fan PID
+#   fan-controller         — adaptive Dell PowerEdge fan PID
 #   node_exporter          — :9100  host CPU/mem/disk/net + textfile
 #   cadvisor               — :8089  per-container metrics
 #   ipmi_exporter          — :9290  chassis sensors
@@ -23,7 +23,7 @@
 # Same source tree the bash script lives in; we copy host-agent/go.mod
 # + the Go source dirs. Built static (CGO_ENABLED=0) + stripped so the
 # final image stays small. VERSION is stamped into main.version via
-# -ldflags so `dell-fan-controller --version` (if we ever add the flag)
+# -ldflags so `fan-controller --version` (if we ever add the flag)
 # matches /etc/host-agent-version.
 FROM golang:1.23-bookworm AS go-builder
 ARG VERSION=dev
@@ -34,8 +34,8 @@ COPY internal/ internal/
 RUN CGO_ENABLED=0 go build \
       -trimpath \
       -ldflags="-s -w -X main.version=${VERSION}" \
-      -o /dell-fan-controller \
-      ./cmd/dell-fans
+      -o /fan-controller \
+      ./cmd/fan-controller
 
 # -------- builder: fetch the Go binaries from upstream releases --------
 FROM debian:stable-slim AS builder
@@ -115,9 +115,9 @@ COPY --from=builder /nvidia_gpu_exporter  /usr/local/bin/nvidia_gpu_exporter
 COPY --from=builder /vmagent              /usr/local/bin/vmagent
 
 # Fan controller (Go v2) + per-chassis profiles.
-COPY --from=go-builder /dell-fan-controller /usr/local/bin/dell-fan-controller
-COPY profiles/                              /etc/dell-fans/profiles/
-RUN chmod +x /usr/local/bin/dell-fan-controller
+COPY --from=go-builder /fan-controller /usr/local/bin/fan-controller
+COPY profiles/                              /etc/fan-controller/profiles/
+RUN chmod +x /usr/local/bin/fan-controller
 
 # s6 service definitions: one per sub-service, each probes its hardware
 COPY s6/ /etc/s6-overlay/s6-rc.d/

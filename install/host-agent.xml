@@ -50,5 +50,5 @@
 
   <Config Name="Host devices" Target="/dev" Default="/dev" Mode="rw" Description="Direct passthrough of host /dev. ipmitool and smartctl talk to /dev/ipmi0 and /dev/sd* / /dev/bus/0 directly — Docker doesn't auto-share host devices even with Privileged on. Leave the default." Type="Path" Display="advanced-hide" Required="true" Mask="false">/dev</Config>
 
-  <Config Name="State directory" Target="/var/lib/dell-fans" Default="/mnt/user/appdata/host-agent" Mode="rw" Description="Persistent state for the Dell fan controller's EWMA baseline (takes 24–48 h to learn) and the vmagent write-ahead log. Pre-filled; advanced field — no need to touch." Type="Path" Display="advanced-hide" Required="true" Mask="false">/mnt/user/appdata/host-agent</Config>
+  <Config Name="State directory" Target="/var/lib/fan-controller" Default="/mnt/user/appdata/host-agent" Mode="rw" Description="Persistent state for the Dell fan controller's EWMA baseline (takes 24–48 h to learn) and the vmagent write-ahead log. Pre-filled; advanced field — no need to touch." Type="Path" Display="advanced-hide" Required="true" Mask="false">/mnt/user/appdata/host-agent</Config>
 </Container>

@@ -12,7 +12,7 @@
 #         --privileged --network host --restart=unless-stopped
 #         -v /:/host:ro,rslave                       (host fs read view)
 #         -v /dev:/dev                               (IPMI + smart devices)
-#         -v /var/lib/host-agent:/var/lib/dell-fans  (fan baseline + WAL)
+#         -v /var/lib/host-agent:/var/lib/fan-controller  (fan baseline + WAL)
 #         --label com.centurylinklabs.watchtower.enable=true
 #
 # Hardcoded flags — every host gets the same setup. To change a
@@ -54,7 +54,7 @@ docker run -d \
   -v /run/containerd:/run/containerd:ro \
   -v /var/lib/docker:/var/lib/docker:ro \
   -v /dev:/dev \
-  -v "$STATE_DIR":/var/lib/dell-fans \
+  -v "$STATE_DIR":/var/lib/fan-controller \
   "$IMAGE"
 
 echo

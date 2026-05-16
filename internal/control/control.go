@@ -1,5 +1,5 @@
 // Package control implements the pure control-math functions used by
-// the dell-fans controller: per-class PID step, proximity-to-emergency
+// the fan controller: per-class PID step, proximity-to-emergency
 // floor, EWMA baseline update, and active-GPU intake-air assist.
 //
 // Everything here is a deterministic function of its inputs — no I/O,

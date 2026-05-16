@@ -6,8 +6,8 @@
 # host, e.g. Unraid on consumer hardware) so the rest of the host-agent
 # stack still runs.
 if [ ! -c /dev/ipmi0 ]; then
-  echo "[dell-fans] /dev/ipmi0 absent — fan controller disabled on this host"
+  echo "[fan-controller] /dev/ipmi0 absent — fan controller disabled on this host"
   exec sleep infinity
 fi
 
-exec /usr/local/bin/dell-fan-controller
+exec /usr/local/bin/fan-controller

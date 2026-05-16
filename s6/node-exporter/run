@@ -1,8 +1,8 @@
 #!/usr/bin/env sh
-# Reads dell-fans's textfile output (metrics.prom) from the state dir.
+# Reads fan-controller's textfile output (metrics.prom) from the state dir.
 exec /usr/local/bin/node_exporter \
   --path.rootfs=/host \
   --path.procfs=/host/proc \
   --path.sysfs=/host/sys \
   --collector.filesystem.mount-points-exclude='^/(sys|proc|dev|host|etc)($|/)' \
-  --collector.textfile.directory=/var/lib/dell-fans/state
+  --collector.textfile.directory=/var/lib/fan-controller/state
