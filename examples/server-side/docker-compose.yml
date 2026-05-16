@@ -1,0 +1,56 @@
+# Minimal "server side" companion to host-agent.
+#
+# Brings up a Prometheus 2.x that accepts remote_write pushes from one
+# or more host-agent containers, plus a Grafana with the Server Overview
+# dashboard pre-provisioned. Everything binds to localhost by default —
+# put it behind your own TLS-terminating reverse proxy if you expose it.
+#
+# Run:
+#     cd examples/server-side
+#     docker compose up -d
+#     # → Prometheus on :9090, Grafana on :3000 (admin / admin)
+#
+# Point your host-agent containers at this Prometheus:
+#     PROMETHEUS_REMOTE_WRITE_URL=http://this-host:9090/api/v1/write
+#
+# Storage is on named volumes so data survives `docker compose down`.
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      # Required so host-agent's vmagent can push to /api/v1/write.
+      - --web.enable-remote-write-receiver
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  prometheus-data:
+  grafana-data:

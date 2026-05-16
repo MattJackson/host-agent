@@ -1,34 +1,93 @@
 # host-agent
 
-Per-host bundle: **one container**, s6-supervised, that runs the Dell
-PowerEdge fan controller AND the per-host Prometheus exporters. The
-same image drops onto every Linux Docker host — Dell or not, GPU or
-not, Ubuntu or Unraid — and each sub-service probes its hardware on
-start, gracefully `sleep infinity`'ing if its prerequisites aren't
-present. From the moment a host has this compose in place, every
-future update flows via watchtower bumping the image tag. No further
-per-host action.
+[![CI](https://github.com/OWNER/host-agent/actions/workflows/test.yml/badge.svg)](https://github.com/OWNER/host-agent/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/OWNER/host-agent?display_name=tag&sort=semver)](https://github.com/OWNER/host-agent/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+Single-container, drop-on-any-Linux-host bundle that does two things at once:
+
+1. **Adaptive Dell PowerEdge fan control** — replaces iDRAC's stock fan curve with per-class PIDs (CPU, passive GPU, active GPU, HDD, SSD), an EWMA-tracked equilibrium baseline, and a proximity-to-emergency safety floor.
+2. **Full per-host metrics** — bundles `node_exporter`, `cadvisor`, `ipmi_exporter`, `smartctl_exporter`, `nvidia_gpu_exporter`, and a `vmagent` that pushes everything to your Prometheus via remote_write.
+
+Each sub-service probes its hardware on start and self-disables if its prerequisites are missing, so the *same image* runs on a Dell R730xd with a Tesla GPU, an Unraid box on consumer hardware, and a plain Debian VM with nothing exotic attached. No per-host build, no per-host config — set two env vars (image source, Prometheus URL) and it runs.
+
+```
+┌──────────────────────── your host ────────────────────────┐
+│                                                           │
+│   host-agent (single container, s6-supervised)            │
+│   ├─ fan-controller   (Dell IPMI PID controller)          │
+│   ├─ node_exporter    :9100                               │
+│   ├─ cadvisor         :8089                               │
+│   ├─ ipmi_exporter    :9290                               │
+│   ├─ smartctl_exporter:9633                               │
+│   ├─ nvidia_gpu_expo. :9835                               │
+│   └─ vmagent ──────────── remote_write ──┐                │
+│                                          │                │
+└──────────────────────────────────────────┼────────────────┘
+                                           │
+                              ┌────────────▼────────────┐
+                              │  your Prometheus        │
+                              │  (or VictoriaMetrics,   │
+                              │   Grafana Cloud, Mimir) │
+                              └─────────────────────────┘
+```
+
+## Quick start
+
+```sh
+# 1. Pick where you're pushing metrics.
+export HOST_AGENT_IMAGE=ghcr.io/OWNER/host-agent:latest
+export PROMETHEUS_REMOTE_WRITE_URL=https://your.prometheus/api/v1/write
+
+# 2. (Dell hosts only) load the IPMI kernel module + create state dir.
+sudo modprobe ipmi_devintf
+echo ipmi_devintf | sudo tee /etc/modules-load.d/ipmi.conf
+sudo install -d -m 755 /var/lib/fan-controller/state
+
+# 3. Run.
+docker run -d \
+  --name host-agent \
+  --restart unless-stopped \
+  --privileged \
+  --network host \
+  --cgroupns host \
+  -e PROMETHEUS_REMOTE_WRITE_URL \
+  -v /:/host:ro,rslave \
+  -v /sys:/sys:ro \
+  -v /run/docker.sock:/run/docker.sock \
+  -v /run/containerd:/run/containerd:ro \
+  -v /var/lib/docker:/var/lib/docker:ro \
+  -v /dev:/dev \
+  -v /var/lib/fan-controller:/var/lib/fan-controller \
+  "$HOST_AGENT_IMAGE"
+```
+
+The container will appear in your Prometheus on its first scrape, labeled with `host=<kernel-hostname>`. There's no central config to edit when you add a new box — the agent introduces itself.
 
 ## What's inside
 
 | sub-service | port | runs when | otherwise |
 |---|---|---|---|
-| `fan-controller` | — | `/dev/ipmi0` exists AND BMC is Dell | sleep |
-| `node_exporter` | 9100 | always | always |
-| `cadvisor` | 8089 | `/var/run/docker.sock` mounted | sleep |
-| `ipmi_exporter` | 9290 | `/dev/ipmi0` exists | sleep |
-| `smartctl_exporter` | 9633 | always (auto-discovers) | always |
-| `nvidia_gpu_exporter` | 9835 | `nvidia-smi` is present | sleep |
+| `fan-controller`     | —    | `/dev/ipmi0` exists AND BMC is Dell | sleep |
+| `node_exporter`      | 9100 | always                              | always |
+| `cadvisor`           | 8089 | `/run/docker.sock` mounted          | sleep |
+| `ipmi_exporter`      | 9290 | `/dev/ipmi0` exists                 | sleep |
+| `smartctl_exporter`  | 9633 | always (auto-discovers)             | always |
+| `nvidia_gpu_exporter`| 9835 | `nvidia-smi` is present             | sleep |
+| `vmagent`            | 8429 | `PROMETHEUS_REMOTE_WRITE_URL` set   | sleep |
 
-`node_exporter`'s `--collector.textfile.directory` is `/var/lib/fan-controller/state`,
-which is where the fan controller writes its own `metrics.prom` each
-cycle — so controller state (setpoints, per-class temps, EWMA baseline,
-binding source) is exposed to Prometheus through node-exporter on the
-same :9100 endpoint.
+`node_exporter` runs with `--collector.textfile.directory=/var/lib/fan-controller/state`, so the fan controller's own state metrics (setpoint, EWMA baseline, per-class temps & targets) are emitted alongside the standard node metrics on `:9100`. The dashboard treats them as native Prometheus series.
 
-## Compose (paste this on every host)
+## Install
+
+### Option A — single `docker run` (most hosts)
+
+See [Quick start](#quick-start). Idempotent re-runs of the same `docker run` aren't (Docker will error on the name conflict); use `docker rm -f host-agent` then re-run, or use `install/install.sh` which does that automatically.
+
+### Option B — docker compose
 
 ```yaml
+# docker-compose.yml
 services:
   host-agent:
     image: ${HOST_AGENT_IMAGE:?HOST_AGENT_IMAGE must be set}
@@ -41,7 +100,7 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=utility
-      - PROMETHEUS_REMOTE_WRITE_URL=${PROMETHEUS_REMOTE_WRITE_URL:?PROMETHEUS_REMOTE_WRITE_URL must be set}
+      - PROMETHEUS_REMOTE_WRITE_URL=${PROMETHEUS_REMOTE_WRITE_URL:?must be set}
       - PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN=${PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN:-}
       - PROMETHEUS_REMOTE_WRITE_USERNAME=${PROMETHEUS_REMOTE_WRITE_USERNAME:-}
       - PROMETHEUS_REMOTE_WRITE_PASSWORD=${PROMETHEUS_REMOTE_WRITE_PASSWORD:-}
@@ -54,193 +113,244 @@ services:
       - /var/lib/docker:/var/lib/docker:ro
       - /dev:/dev
       - /var/lib/fan-controller:/var/lib/fan-controller
-    labels:
-      - com.centurylinklabs.watchtower.enable=true
 ```
 
-**Required env**:
+Drop the two env vars in an `.env` next to the compose, then `docker compose up -d`. The `infra/deploy.sh` wrapper in this repo handles the "auto-detect nvidia runtime" case.
+
+### Option C — Unraid (Community Applications template)
+
+The `install/host-agent.xml` template is consumable directly from GitHub:
+
+1. Settings → Community Applications → Add Container → **Template repositories**:
+   `https://github.com/OWNER/host-agent`
+2. Search for **host-agent**, click **Install**.
+3. Fill in **Prometheus remote-write URL** (the only required field).
+4. Apply.
+
+All other paths and the `--cgroupns=host` flag are pre-baked into the template. Add bearer / basic auth via the optional fields if your Prometheus needs them.
+
+### Option D — `install.sh` one-shot (curl-pipe)
+
+```sh
+export HOST_AGENT_IMAGE=ghcr.io/OWNER/host-agent:latest
+export PROMETHEUS_REMOTE_WRITE_URL=https://your.prometheus/api/v1/write
+curl -sf https://raw.githubusercontent.com/OWNER/host-agent/main/install/install.sh | sh
+```
+
+Idempotent (stops + removes any existing `host-agent` container first). All flags hardcoded — to change them, fork or build a new image, don't edit the script per host.
+
+## Configuration
+
+Every knob is an env var. Required:
 
 | var | what it is |
 |---|---|
-| `HOST_AGENT_IMAGE` | image to pull, e.g. `ghcr.io/<user>/host-agent:latest` |
+| `HOST_AGENT_IMAGE` | image to pull, e.g. `ghcr.io/OWNER/host-agent:latest` |
 | `PROMETHEUS_REMOTE_WRITE_URL` | your receiver's `/api/v1/write` endpoint |
 
-**GPU hosts**: set `HOST_AGENT_RUNTIME=nvidia` so the NVIDIA Container
-Runtime injects `nvidia-smi` at start. Default `runc` is harmless on
-hosts without nvidia-container-toolkit.
+Optional — Prometheus push auth (bearer XOR basic):
 
-**Auth** (optional; bearer XOR basic):
+| var | default | what |
+|---|---|---|
+| `PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN` | — | sent as `Authorization: Bearer …` |
+| `PROMETHEUS_REMOTE_WRITE_USERNAME` / `_PASSWORD` | — | HTTP basic auth |
+| `PROMETHEUS_REMOTE_WRITE_TLS_INSECURE_SKIP_VERIFY` | `false` | self-signed certs |
 
-```sh
-# Bearer (preferred for Grafana Cloud, hosted Prometheus, etc.)
-PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN=...
+Optional — GPU runtime:
 
-# OR HTTP basic auth
-PROMETHEUS_REMOTE_WRITE_USERNAME=...
-PROMETHEUS_REMOTE_WRITE_PASSWORD=...
+| var | default | what |
+|---|---|---|
+| `HOST_AGENT_RUNTIME` | `runc` | set to `nvidia` to inject `nvidia-smi` via NVIDIA Container Runtime |
 
-# Self-signed TLS on the receiver
-PROMETHEUS_REMOTE_WRITE_TLS_INSECURE_SKIP_VERIFY=true
+Optional — per-class fan controller overrides (advanced; override the chassis profile):
+
+| var | default (from `profiles/default.env`) | what |
+|---|---|---|
+| `CPU_TARGET` / `CPU_EMERGENCY` / `CPU_DEADBAND` / `CPU_APPROACH_WINDOW` | `70` / `80` / `5` / `5` | CPU class PID |
+| `GPU_TARGET` / `GPU_EMERGENCY` / `GPU_DEADBAND` / `GPU_APPROACH_WINDOW` | `83` / `90` / `2` / `7` | passive GPU PID |
+| `ACTIVE_GPU_TARGET` / `ACTIVE_GPU_EMERGENCY` | `78` / `88` | active GPU (own-fan) assist |
+| `HDD_TARGET` / `HDD_EMERGENCY` | `40` / `50` | HDD PID |
+| `SSD_TARGET` / `SSD_EMERGENCY` | `50` / `65` | SSD PID |
+| `PROFILE` | autodetected | force a profile slug (e.g. `r730xd`); overrides dmidecode |
+
+See `profiles/default.env` for the full reference + tuning notes.
+
+## Server side (your Prometheus)
+
+The receiver needs Prometheus 2.33+ with `--web.enable-remote-write-receiver`, or any compatible TSDB:
+
+- Prometheus
+- VictoriaMetrics (single-node or cluster)
+- Grafana Mimir
+- Cortex
+- Grafana Cloud (hosted)
+
+A minimal local setup (`examples/server-side/` in this repo):
+
+```yaml
+# prometheus.yml
+global:
+  scrape_interval: 15s
+# Hosts push to us; we don't scrape them.
+scrape_configs: []
+
+rule_files:
+  - rules.yml
 ```
 
-The receiver needs Prometheus 2.33+ run with
-`--web.enable-remote-write-receiver`, or any compatible TSDB
-(VictoriaMetrics, Grafana Mimir, Cortex, Grafana Cloud).
+```yaml
+# rules.yml — populates the Grafana host dropdown
+groups:
+  - name: host-agent
+    rules:
+      - record: hosts_active
+        expr: group by (host) (count_over_time(up[5m]))
+```
 
-**One-time host setup**: load the IPMI kernel module on Dell hosts, and
-make sure `/var/lib/fan-controller` exists. `infra/host-requirements.sh`
-does this — DR runs it automatically; on a new host run it once by
-hand.
+Run Prometheus with `--web.enable-remote-write-receiver` and the agent's `vmagent` will push to `/api/v1/write` automatically.
 
-## Why one container with sub-processes
+## Dashboard
 
-The cloud-native default is one container per concern (the
-sidecar-per-exporter pattern monitoring stacks usually ship as). For a
-bare-metal, single-node fleet that pattern is mostly overhead:
+A pre-built Grafana dashboard for `host-agent` data lives in `examples/grafana/server-overview.json`. Import via Grafana → Dashboards → New → Import → paste JSON. Sections:
 
-- **One image to update.** Bump the image once → every host's
-  watchtower picks it up. No 5× the image pulls, no drift between
-  containers.
-- **One restart unit per host.** s6 supervises each sub-process
-  individually — a crashed exporter is restarted in isolation without
-  taking down its siblings — but the operator-facing unit is a single
-  container.
-- **One compose to paste.** Adding a new host = paste 15 lines, done.
-  Adding a new sub-process to the stack = no compose change on any
-  host.
-- **No cross-container coordination.** Sub-services share the
-  container's view of `/dev`, `/sys`, `/proc`, `/var/run/docker.sock`
-  — no per-exporter mount duplication.
+- **Temperatures** — CPU per-socket, IPMI inlet/exhaust, GPU die, per-drive SMART
+- **Fan setpoint + RPM** — controller's commanded % vs measured RPM per fan
+- **CPU / RAM / disk / network** — standard `node_exporter` panels
+- **GPU util / mem / power** — from `nvidia_gpu_exporter`
+- **Build panel** — which container build + chassis profile each host reports
 
-Trade-off: a leaking sub-process shares its memory pressure with the
-others (the container has unified cgroups). For these particular
-workloads — all of them sit <1% CPU and <50 MB resident at idle —
-that's a non-issue in practice.
+The dashboard is hardware-agnostic (uses `class=~"cpu1|cpu2"` and `device=~".+"` patterns) so it adapts to whatever each host actually exposes.
 
-## Build / release
-
-`.github/workflows/build-host-agent.yml` builds + pushes the image on
-every push under `host-agent/**`. Weekly cron rebuild picks up
-base-image and upstream exporter security fixes. No manual `build.sh`.
-
-Pinned upstream versions are in the `ARG ...` lines at the top of the
-Dockerfile — bump those and commit to roll forward.
-
-## Fan controller (sub-service detail)
-
-Replaces iDRAC's automatic curve with three independent per-class PIDs
-(CPU + passive GPU + HDD); the worst-offender class wins each cycle.
-Self-tunes its baseline (EWMA persisted to
-`/var/lib/fan-controller/state/`) over 24–48 hrs.
-
-Inner loop runs every `INTERVAL=15s`:
+## How the fan controller works
 
 ```
-read CPU temps (coretemp via /sys, fallback to IPMI entity 3.x)
-read GPU temps (nvidia-smi), classify each: passive vs active
-  - passive (no own fan, e.g. Tesla P4) → its own PID
-  - active  (own fan, e.g. RTX A5500)   → assist + emergency, NOT a PID
-read HDD temps (smartctl --scan + smartctl -A -n standby per drive)
-  - cached every HDD_READ_INTERVAL (60s), drives in standby are skipped
+read CPU temps  (coretemp via /sys, IPMI entity 3.x fallback)
+read GPU temps  (nvidia-smi), classify passive vs active
+read HDD/SSD    (smartctl --scan, then -A -n standby per drive)
+                  ├─ HDD: classified by rotation_rate > 0
+                  └─ SSD/NVMe: rotation_rate = 0
 
-# Per-class emergency: hitting any class's EMERGENCY → fans 100%.
-if cpu_max         ≥ CPU_EMERGENCY            (80°C)
-or passive_gpu_max ≥ GPU_EMERGENCY            (85°C)
-or active_gpu_max  ≥ ACTIVE_GPU_EMERGENCY     (88°C)
-or hdd_max         ≥ HDD_EMERGENCY            (50°C): fans → 100%
+Emergency override: any class >= its class_EMERGENCY ⇒ fans = 100%, stay
+                    until ALL classes drop below {emergency - hysteresis}.
 
-# Three independent PIDs, each producing a candidate fan speed.
-for class in {cpu, passive_gpu, hdd}:
-    candidate = clamp(current + P×err + D×d_temp, MIN_FAN, MAX_FAN)
-    # asymmetric deadband: positive errors always step up, even
-    # within the deadband; negative errors in deadband drift toward
-    # the EWMA base. Cooldown bias — a heat-soaked chassis stays
-    # loud until it actually cools to target.
+Per-class PID candidates (CPU, passive_GPU, HDD, SSD):
+    candidate = clamp(current_speed + P×err + D×d_temp,
+                      MIN_FAN, MAX_FAN)
+    # Asymmetric deadband: positive errors always step up, even inside
+    # the deadband. Negative errors inside deadband drift toward EWMA
+    # base ⇒ heat-soaked chassis stays loud until it actually cools.
 
-# Active-GPU assist: chassis can't cool the die directly, but it
-# can lower the air the GPU's own fan pulls in.
-if active_gpu_max > ACTIVE_GPU_TARGET:
-    assist_floor = MIN_FAN + (active_gpu_max - ACTIVE_GPU_TARGET) × ASSIST_GAIN
+Per-class proximity floor (linear ramp from approach_window edge to emergency):
+    pf[class] = ramp(class_temp,
+                     EMERGENCY - APPROACH_WINDOW,  EMERGENCY,
+                     MIN_FAN,                       MAX_FAN)
+    # State-free — catches fast spikes the PID step can't react to.
 
-# Per-class proximity floor: silent until temp is within
-# class_APPROACH_WINDOW of class_EMERGENCY, then ramps to MAX_FAN.
-# Catches fast spikes the proportional loop can't react to.
-for class in {cpu, passive_gpu, active_gpu, hdd}:
-    proximity_floor[class] = linear_ramp(class_max, class_EMERGENCY - WINDOW, class_EMERGENCY)
+Active-GPU assist (own-fan cards like RTX A5500 — chassis can't cool the
+die, only the inlet air):
+    if active_temp > ACTIVE_GPU_TARGET:
+        assist = MIN_FAN + (active_temp - ACTIVE_GPU_TARGET) × ASSIST_GAIN
 
-new_speed = max(cpu_candidate, pg_candidate, hdd_candidate,
-                cpu_pf, pg_pf, ag_pf, hdd_pf, ag_assist)
+final_speed = max(cpu_cand, pg_cand, hdd_cand, ssd_cand,
+                  cpu_pf, pg_pf, ag_pf, hdd_pf, ssd_pf,
+                  ag_assist)
+
+EWMA baseline (persisted to /var/lib/fan-controller/state/base):
+    base_speed = α × current_speed + (1-α) × base_speed
+    # α = 0.001/cycle → settles over 24-48 hrs of operation.
 ```
+
+The whole loop runs every `INTERVAL_SEC=15s`. All temperature thresholds, gains, and timing constants come from the chassis profile + class defaults — no hardcoded fan values, no lookup tables, no piecewise rules.
 
 ### Per-chassis profiles
 
-`profiles/<model>.env`, auto-loaded by `dmidecode` product_name. Model
-profile + `default.env` use `: "${VAR:=value}"` — container env wins
-over profile, profile wins over default.
+`profiles/<model>.env` files are autoloaded by `dmidecode product_name`. Currently shipped:
 
-```
-profiles/
-├── default.env    # conservative fallback for unknown Dell models
-├── r730xd.env     # MIN_FAN=10 (BMC clamps lower values to safety RPM)
-└── r410.env       # MIN_FAN=20 (BMC obeys lower values literally → fan stall)
-```
+| chassis | MIN_FAN | notes |
+|---|---|---|
+| `r730xd` | 10 | BMC clamps PWM <10 to a safety RPM (5040). No fan-stall risk. |
+| `r730`   | 10 | Same firmware family as R730xd. |
+| `r410`   | 20 | BMC obeys low PWM literally — going lower stalls fans. |
+| `xc730xd_12` | 10 | Dell XC = Nutanix OEM rebadge of R730xd. Same BMC. |
+| `default` | 15 | Conservative fallback for unknown Dell models. |
 
-Override autodetection with `PROFILE=foo` env var.
+Override autodetection with `PROFILE=foo`. Adding a chassis: drop a `profiles/<slug>.env` with `MIN_FAN` and (optionally) the `SENSOR_*` IPMI sensor mapping. No code change needed.
 
-### BMC quirks worth knowing
+## Tested hardware
 
-**R730xd:** Dell BMC clamps PWM <10% to a safety RPM (5040). Going
-lower has no effect. No fan-stall risk at low values.
+| class | tested | likely works | won't work |
+|---|---|---|---|
+| **Chassis (fan ctrl)** | Dell PowerEdge R730xd, R730, R410, XC730xd-12 | R720, R630, R740 (same iDRAC family) | Non-Dell BMCs (Supermicro, HPE, Lenovo — fan controller sleeps, exporters keep running) |
+| **CPU** | Xeon E5 v3/v4 | any with `coretemp` driver | — |
+| **GPUs (passive)** | Tesla P4 | T4, M40, P40, A2, L4, A10, RTX 4000 Ada SFF | — |
+| **GPUs (active)** | RTX A5500 | any consumer/workstation card with own fan | — |
+| **Drives** | SATA HDD, SATA SSD, NVMe, MegaRAID passthrough | anything `smartctl --scan` enumerates | — |
+| **OS** | Debian, Ubuntu, Unraid | any Linux + Docker | — |
 
-**R410:** Dell BMC obeys low PWM literally. Probed values:
-- 5% → 0 RPM (fans STOP)
-- 10% → 840 RPM (suspicious, possibly partial stall)
-- 15% → 2520 RPM (BMC flags Lower Critical alarm)
-- 20% → 3600 RPM (operational floor)
+Even on non-Dell hardware, **exporters still work** — `node_exporter`, `cadvisor`, `smartctl_exporter`, `nvidia_gpu_exporter` all run. Only the `fan-controller` and `ipmi_exporter` self-disable.
 
-R410 must stay at MIN_FAN=20.
+## Why one container with sub-processes
+
+The cloud-native default is one container per concern. For a single-node fleet that pattern is mostly overhead:
+
+- **One image to update.** Bump the tag → every host's watchtower picks it up. No 5× image pulls, no drift between containers.
+- **One restart unit per host.** s6 supervises each sub-process individually — a crashed exporter is restarted in isolation — but the operator-facing unit is a single container.
+- **One compose to paste.** Adding a new host = paste 15 lines. Adding a new sub-process to the agent = no compose change on any host.
+- **No cross-container coordination.** Sub-services share the container's view of `/dev`, `/sys`, `/proc`, `/run/docker.sock` — no per-exporter mount duplication.
+
+Tradeoff: a leaking sub-process shares memory pressure with its siblings (unified cgroup). For these workloads (all <1% CPU and <50 MB resident at idle), that's a non-issue.
 
 ## Operational
 
-**Logs** (interleaved by sub-service prefix):
+**Logs** (s6 prefixes each line with the sub-service):
 ```sh
-sudo docker logs host-agent --tail 50 -f
+docker logs host-agent --tail 100 -f
 ```
 
 **Controller state**:
 ```sh
 sudo cat /var/lib/fan-controller/state/base
-# base_speed=22.4515   ← EWMA of equilibrium fan speed
-# last_speed=45        ← actual fan speed at last write
-# samples=109          ← cycles since restart
+# base_speed=22.4515  ← EWMA of equilibrium fan speed
+# last_speed=45       ← actual fan speed at last write
+# samples=109         ← cycles since restart
 # last_updated=…
 ```
 
-**Per-host tuning override**: drop env vars in `infra/.env`
-(e.g. `CPU_TARGET=72` to run quieter). Container env beats profile
-beats default.
+**Per-host tuning** (advanced): drop env vars in `.env` next to the compose (e.g. `CPU_TARGET=72` to run quieter). Container env beats profile beats default. Most users should never need this — the chassis profile auto-loads sane defaults.
 
 ## Source layout
 
 ```
 host-agent/
-├── README.md                    # this file
-├── Dockerfile                   # multi-stage: go-builder + exporter-fetch + s6-overlay
-├── go.mod                       # zero external deps; vendor-free build
-├── cmd/fan-controller/               # controller entry point
-├── internal/                    # PID/proximity/EWMA + sensors + IPMI + state + metrics
-├── profiles/                    # per-chassis tuning (r730xd, r730, r410, xc730xd-12, default)
-├── s6/                          # s6-overlay service tree
-│   ├── fan-controller/               (controller)
-│   ├── node-exporter/           (:9100)
-│   ├── cadvisor/                (:8089)
-│   ├── ipmi-exporter/           (:9290)
-│   ├── smartctl-exporter/       (:9633)
-│   ├── nvidia-gpu-exporter/     (:9835)
-│   ├── vmagent/                 (push to central Prometheus)
-│   └── user/contents.d/         (enables each service in default bundle)
-└── infra/
-    ├── docker-compose.yml       # single service, paste-anywhere
-    ├── deploy.sh                # thin wrapper for reconcile timer
-    └── host-requirements.sh     # one-time host setup (ipmi_devintf, state dir)
+├── README.md                  # this file
+├── LICENSE                    # MIT
+├── CHANGELOG.md               # release notes
+├── CONTRIBUTING.md            # dev setup, code style, profile contributions
+├── SECURITY.md                # vulnerability reporting
+├── Dockerfile                 # multi-stage: go-builder + exporter-fetch + s6-overlay
+├── go.mod                     # zero external Go deps; vendor-free build
+├── cmd/fan-controller/        # binary entry point
+├── internal/                  # PID + sensors + IPMI + state + metrics
+├── profiles/                  # per-chassis env files
+├── s6/                        # s6-overlay service tree
+├── examples/                  # bundled server-side compose + Grafana dashboard
+├── install/                   # Unraid CA template + curl-pipe installer
+├── infra/                     # docker-compose + deploy.sh + host-requirements.sh
+└── .github/                   # CI workflows, issue + PR templates
 ```
+
+## Development & contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). TL;DR:
+
+```sh
+cd host-agent
+go test ./...                 # unit + e2e tests; no Docker needed
+docker build -t host-agent:dev .
+```
+
+The fan controller is pure Go with zero external dependencies — the build is reproducible, the binary is ~2.4 MB, all logic is unit-testable as functions of inputs.
+
+## License
+
+[MIT](LICENSE) © Matthew Jackson
