@@ -261,13 +261,13 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "label_replace(smartctl_device_temperature{host=~\"$host\",temperature_type=\"current\"} and on(host,device) smartctl_device_rotation_rate, \"slot\", \"$1\", \"device\", \"(?:bus_0_(?:sat\\\\+)?megaraid_)?(.+)\") unless on(host,device) unraid_disk_info\nor\n(smartctl_device_temperature{host=~\"$host\",temperature_type=\"current\"} and on(host,device) smartctl_device_rotation_rate) * on(host,device) group_left(slot) unraid_disk_info",
+          "expr": "sort_by_label(\n  label_replace(smartctl_device_temperature{host=~\"$host\",temperature_type=\"current\"} and on(host,device) smartctl_device_rotation_rate, \"slot\", \"$1\", \"device\", \"(?:bus_0_(?:sat\\\\+)?megaraid_)?(.+)\") unless on(host,device) unraid_disk_info\n  or\n  (smartctl_device_temperature{host=~\"$host\",temperature_type=\"current\"} and on(host,device) smartctl_device_rotation_rate) * on(host,device) group_left(slot, sort_key) unraid_disk_info,\n  \"sort_key\", \"slot\"\n)",
           "legendFormat": "{{slot}} HDD",
           "instant": true
         },
         {
           "refId": "B",
-          "expr": "label_replace(smartctl_device_temperature{host=~\"$host\",temperature_type=\"current\"} unless on(host,device) smartctl_device_rotation_rate, \"slot\", \"$1\", \"device\", \"(?:bus_0_(?:sat\\\\+)?megaraid_)?(.+)\") unless on(host,device) unraid_disk_info\nor\n(smartctl_device_temperature{host=~\"$host\",temperature_type=\"current\"} unless on(host,device) smartctl_device_rotation_rate) * on(host,device) group_left(slot) unraid_disk_info",
+          "expr": "sort_by_label(\n  label_replace(smartctl_device_temperature{host=~\"$host\",temperature_type=\"current\"} unless on(host,device) smartctl_device_rotation_rate, \"slot\", \"$1\", \"device\", \"(?:bus_0_(?:sat\\\\+)?megaraid_)?(.+)\") unless on(host,device) unraid_disk_info\n  or\n  (smartctl_device_temperature{host=~\"$host\",temperature_type=\"current\"} unless on(host,device) smartctl_device_rotation_rate) * on(host,device) group_left(slot, sort_key) unraid_disk_info,\n  \"sort_key\", \"slot\"\n)",
           "legendFormat": "{{slot}} SSD",
           "instant": true
         }
