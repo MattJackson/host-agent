@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+# smartctl_exporter auto-discovers drives. On Dell hosts with PERC
+# RAID, `smartctl --scan` returns both the real drives at
+# /dev/bus/0 -d megaraid,N AND duplicate /dev/sd[a-z] entries that
+# always fail to open ("please try adding '-d megaraid,N'"). Each
+# failed open takes ~5s, blocking the poll cycle long enough that
+# Prometheus scrapes time out.
+#
+# Detect megaraid passthrough and exclude the bogus /dev/sd[a-z]
+# entries on those hosts. On plain SATA hosts (Unraid etc.) the
+# /dev/sd[a-z] entries are the real drives — no exclusion applied.
+#
+# Regex matches the exporter's *stripped* device label, not the full
+# /dev/... path. Per buildDeviceLabel() in smartctl_exporter, /dev/sda
+# becomes `sda` and /dev/bus/0 with -d megaraid,0 becomes `bus_0_megaraid_0`.
+# So the exclude regex must start with `sd`, not `/dev/sd`.
+if smartctl --scan 2>/dev/null | grep -q 'megaraid'; then
+  echo "[smartctl-exporter] megaraid passthrough detected — excluding sd[a-z] phantoms"
+  exec /usr/local/bin/smartctl_exporter \
+    --web.listen-address=:9633 \
+    --smartctl.device-exclude='^sd[a-z]'
+fi
+exec /usr/local/bin/smartctl_exporter --web.listen-address=:9633

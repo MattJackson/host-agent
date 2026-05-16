@@ -1,0 +1,188 @@
+#!/usr/bin/env sh
+# vmagent: scrape every sub-service on this host's localhost ports and
+# ship the samples to the central Prometheus via remote_write.
+#
+# external_labels.host = kernel hostname. The dashboard reads this and
+# only this — no static host labels in prometheus.yml, no operator-
+# supplied hostname. "Whatever the box reports" is the host name.
+#
+# Configurable via env vars (passed through from docker compose / the
+# install.sh wrapper / the Unraid CA template):
+#
+#   PROMETHEUS_REMOTE_WRITE_URL
+#       Full https?://host:port/api/v1/write URL of the receiver. The
+#       receiver must run Prometheus 2.33+ with
+#       --web.enable-remote-write-receiver.
+#
+#   PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN
+#       Bearer token sent as `Authorization: Bearer …`. Empty = no auth.
+#
+#   PROMETHEUS_REMOTE_WRITE_USERNAME / _PASSWORD
+#       Basic auth. Empty = no auth. Mutually exclusive with bearer.
+#
+#   PROMETHEUS_REMOTE_WRITE_TLS_INSECURE_SKIP_VERIFY=true
+#       Skip TLS cert verification on the receiver. For self-signed
+#       certs only — leave unset in normal operation.
+#
+# Per-chassis sensor normalization: same `profiles/<model>.env` files
+# the fan controller uses, extended with SENSOR_* vars. We auto-detect
+# the chassis via dmidecode (same as fan-controller's detect_model),
+# source the matching profile, and emit metric_relabel_configs that
+# stamp a stable `class` label (cpu1/cpu2/inlet/exhaust) onto whichever
+# IPMI sensor matches on this box. Dashboard queries {class="cpu1"}
+# regardless of chassis.
+#
+# Adding a new chassis: drop a `host-agent/profiles/<model>.env` with
+# SENSOR_* values + fan tuning. No vmagent code change.
+
+REMOTE_WRITE_URL="${PROMETHEUS_REMOTE_WRITE_URL:-}"
+HOSTNAME_LABEL="$(hostname -s)"
+
+if [ -z "$REMOTE_WRITE_URL" ]; then
+  echo "[vmagent] PROMETHEUS_REMOTE_WRITE_URL not set — vmagent disabled."
+  echo "[vmagent] Set it to your receiver's /api/v1/write endpoint to enable metric push."
+  echo "[vmagent] Sibling exporters (node, cadvisor, ipmi, smartctl, nvidia-gpu, fan controller) continue running."
+  exec sleep infinity
+fi
+WAL_DIR=/var/lib/fan-controller/vmagent-wal
+PROFILE_DIR=/etc/fan-controller/profiles
+
+# Image build version (short git SHA, written at build time).
+VERSION_LABEL="$(cat /etc/host-agent-version 2>/dev/null || echo dev)"
+
+# detect_model: matches cmd/fan-controller/main.go#detectModel exactly so
+# vmagent loads the same profile the fan controller does. Must run
+# BEFORE the host_agent_info write so MODEL/PROFILE_FILE are populated.
+detect_model() {
+  raw=$(cat /sys/class/dmi/id/product_name 2>/dev/null | tr -d '\n')
+  [ -z "$raw" ] && { echo unknown; return; }
+  raw="${raw#PowerEdge }"
+  echo "$raw" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9' '_' | sed 's/_*$//'
+}
+
+MODEL="${PROFILE:-$(detect_model)}"
+PROFILE_FILE="$PROFILE_DIR/$MODEL.env"
+
+if [ -f "$PROFILE_FILE" ]; then
+  echo "[vmagent] chassis=$MODEL profile=$PROFILE_FILE"
+  set -a; . "$PROFILE_FILE"; set +a
+else
+  echo "[vmagent] chassis=$MODEL profile=none (will use coretemp fallback for CPU temps)"
+fi
+# Default profile fills any unset SENSOR_* + fan-tuning vars.
+set -a; . "$PROFILE_DIR/default.env"; set +a
+
+# Write host_agent_info textfile NOW that MODEL/PROFILE_FILE are known.
+# node-exporter's textfile collector picks it up as
+# host_agent_info{version,chassis,profile} = 1.
+TEXTFILE_DIR=/var/lib/fan-controller/state
+mkdir -p "$TEXTFILE_DIR"
+cat > "$TEXTFILE_DIR/.host_agent_info.prom.tmp" <<EOF
+# HELP host_agent_info Build version + detected chassis profile for the host-agent container.
+# TYPE host_agent_info gauge
+host_agent_info{version="${VERSION_LABEL}",chassis="${MODEL:-unknown}",profile="${PROFILE_FILE##*/}"} 1
+EOF
+mv "$TEXTFILE_DIR/.host_agent_info.prom.tmp" "$TEXTFILE_DIR/host_agent_info.prom"
+
+mkdir -p "$WAL_DIR"
+
+# build_ipmi_rule: emit one metric_relabel_configs entry. Empty NAME
+# means "this chassis doesn't expose that class via IPMI" -> skip.
+build_ipmi_rule() {
+  class=$1 name=$2 id=$3
+  [ -z "$name" ] && return
+  if [ -n "$id" ]; then
+    printf '      - source_labels: [__name__, name, id]\n'
+    printf '        regex: "ipmi_temperature_celsius;%s;%s"\n' "$name" "$id"
+  else
+    printf '      - source_labels: [__name__, name]\n'
+    printf '        regex: "ipmi_temperature_celsius;%s"\n' "$name"
+  fi
+  printf '        target_label: class\n'
+  printf '        replacement: %s\n' "$class"
+}
+
+IPMI_RELABEL=$(
+  build_ipmi_rule cpu1    "${SENSOR_CPU1_NAME}"    "${SENSOR_CPU1_ID}"
+  build_ipmi_rule cpu2    "${SENSOR_CPU2_NAME}"    "${SENSOR_CPU2_ID}"
+  build_ipmi_rule inlet   "${SENSOR_INLET_NAME}"   "${SENSOR_INLET_ID}"
+  build_ipmi_rule exhaust "${SENSOR_EXHAUST_NAME}" "${SENSOR_EXHAUST_ID}"
+)
+[ -z "$IPMI_RELABEL" ] && IPMI_RELABEL='      # no SENSOR_* configured for this chassis'
+
+# Universal coretemp class mapping. node_hwmon_temp_celsius reports
+# every core; the dashboard takes max() per chip, so labeling the
+# whole socket is enough. Works on every Linux host regardless of
+# chassis or BMC.
+NODE_RELABEL='      - source_labels: [__name__, chip]
+        regex: "node_hwmon_temp_celsius;platform_coretemp_0"
+        target_label: class
+        replacement: cpu1
+      - source_labels: [__name__, chip]
+        regex: "node_hwmon_temp_celsius;platform_coretemp_1"
+        target_label: class
+        replacement: cpu2'
+
+cat > /run/vmagent.yml <<EOF
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    host: "${HOSTNAME_LABEL}"
+
+scrape_configs:
+  - job_name: node
+    static_configs:
+      - targets: ["localhost:9100"]
+    metric_relabel_configs:
+${NODE_RELABEL}
+
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["localhost:8089"]
+
+  - job_name: ipmi
+    scrape_interval: 30s
+    scrape_timeout: 20s
+    static_configs:
+      - targets: ["localhost:9290"]
+    metric_relabel_configs:
+${IPMI_RELABEL}
+
+  - job_name: smartctl
+    scrape_interval: 60s
+    scrape_timeout: 30s
+    static_configs:
+      - targets: ["localhost:9633"]
+
+  - job_name: nvidia-gpu
+    static_configs:
+      - targets: ["localhost:9835"]
+EOF
+
+# Build auth flags conditionally so an unset env var = no flag (vmagent
+# treats an empty value as "set" and tries to use it).
+set -- \
+  -promscrape.config=/run/vmagent.yml \
+  -remoteWrite.url="${REMOTE_WRITE_URL}" \
+  -remoteWrite.tmpDataPath="${WAL_DIR}" \
+  -httpListenAddr=:8429
+
+AUTH_MODE=none
+if [ -n "${PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN:-}" ]; then
+  set -- "$@" -remoteWrite.bearerToken="${PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN}"
+  AUTH_MODE=bearer
+elif [ -n "${PROMETHEUS_REMOTE_WRITE_USERNAME:-}" ]; then
+  set -- "$@" \
+    -remoteWrite.basicAuth.username="${PROMETHEUS_REMOTE_WRITE_USERNAME}" \
+    -remoteWrite.basicAuth.password="${PROMETHEUS_REMOTE_WRITE_PASSWORD:-}"
+  AUTH_MODE=basic
+fi
+
+if [ "${PROMETHEUS_REMOTE_WRITE_TLS_INSECURE_SKIP_VERIFY:-}" = "true" ]; then
+  set -- "$@" -remoteWrite.tlsInsecureSkipVerify=true
+fi
+
+echo "[vmagent] host=${HOSTNAME_LABEL} remote_write=${REMOTE_WRITE_URL} auth=${AUTH_MODE}"
+
+exec /usr/local/bin/vmagent "$@"

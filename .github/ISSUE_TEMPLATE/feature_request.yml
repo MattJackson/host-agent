@@ -1,0 +1,45 @@
+name: Feature request
+description: Propose a change or new capability.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please skim [CONTRIBUTING.md → What's out of
+        scope](https://github.com/mattjackson/host-agent/blob/main/CONTRIBUTING.md#whats-out-of-scope).
+        External Go deps, lookup tables, and library bindings for
+        IPMI/smartctl/nvidia-smi are by-design no-go's.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's the problem you're trying to solve?
+      description: |
+        Describe the situation that makes you want this feature. The
+        more specific (chassis, workload, current pain), the better.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        How would you like it to work? If you have a concrete API or
+        config shape in mind, sketch it here.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        Anything you tried first (env vars, profile overrides, forks,
+        etc.) and why those didn't fit.
+
+  - type: checkboxes
+    id: chassis-profile
+    attributes:
+      label: Is this a chassis-profile request?
+      options:
+        - label: This is asking for a new `profiles/<model>.env` file.
+        - label: I have access to the hardware and can test the profile.

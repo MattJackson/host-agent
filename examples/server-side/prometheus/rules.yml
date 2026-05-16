@@ -1,0 +1,14 @@
+groups:
+  - name: host-agent
+    interval: 30s
+    rules:
+      # Materialized "host produced any sample in the last 5 min" set.
+      # Powers the Grafana host dropdown — Grafana's `label_values()`
+      # only takes a raw metric selector, not full PromQL, so we
+      # pre-aggregate here and the variable just queries
+      # `label_values(hosts_active, host)`.
+      #
+      # Stale hosts (boxes that stopped pushing) drop off the dropdown
+      # ~5 min after their last sample arrives.
+      - record: hosts_active
+        expr: group by (host) (count_over_time(up[5m]))

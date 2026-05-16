@@ -1,0 +1,20 @@
+smartctl 7.3 2022-02-28 r5338 [x86_64-linux-6.1.0-17-amd64] (local build)
+Copyright (C) 2002-22, Bruce Allen, Christian Franke, www.smartmontools.org
+
+=== START OF READ SMART DATA SECTION ===
+Current Drive Temperature:     31 C
+Drive Trip Temperature:        65 C
+
+Manufactured in week 22 of year 2017
+Specified cycle count over device lifetime:  10000
+Accumulated start-stop cycles:  31
+Specified load-unload count over device lifetime:  300000
+Accumulated load-unload cycles:  167
+Elements in grown defect list: 0
+
+Vendor (Seagate Cache) information
+  Blocks sent to initiator = 5232742400
+  Blocks received from initiator = 9213840240
+  Blocks read from cache and sent to initiator = 1932341210
+  Number of read and write commands whose size <= segment size = 1290340
+  Number of read and write commands whose size > segment size = 0

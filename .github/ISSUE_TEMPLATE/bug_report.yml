@@ -1,0 +1,96 @@
+name: Bug report
+description: Something isn't working as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Most issues we see are hardware-specific
+        — please fill in the chassis / GPU / drive context so we can
+        actually reproduce.
+
+        For security vulnerabilities, do NOT file here. See
+        [SECURITY.md](https://github.com/mattjackson/host-agent/blob/main/SECURITY.md).
+
+  - type: input
+    id: version
+    attributes:
+      label: host-agent version
+      description: From `docker inspect host-agent --format '{{.Config.Image}}'` or the dashboard's "Build" panel.
+      placeholder: "ghcr.io/mattjackson/host-agent:v0.1.2 (sha 7f3a91b)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: Install method
+      options:
+        - docker run
+        - docker compose
+        - Unraid Community Applications
+        - install.sh (curl pipe)
+        - other / custom
+    validations:
+      required: true
+
+  - type: input
+    id: chassis
+    attributes:
+      label: Chassis
+      description: Output of `sudo dmidecode -s system-product-name`. If non-Dell, say so.
+      placeholder: "PowerEdge R730xd"
+    validations:
+      required: true
+
+  - type: input
+    id: profile
+    attributes:
+      label: Profile loaded
+      description: From `docker logs host-agent 2>&1 | grep 'chassis='`
+      placeholder: "chassis=r730xd profile=/etc/fan-controller/profiles/r730xd.env"
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU(s)
+      description: Output of `nvidia-smi -L`, if any.
+      placeholder: "GPU 0: Tesla P4 (UUID: GPU-...)"
+
+  - type: input
+    id: drives
+    attributes:
+      label: Drives
+      description: Output of `lsblk -d -o NAME,TRAN,ROTA,SIZE`.
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        Last ~200 lines around the problem:
+        `docker logs host-agent --tail 200`
+      render: shell
+
+  - type: textarea
+    id: metrics
+    attributes:
+      label: Controller state
+      description: |
+        Contents of `/var/lib/fan-controller/state/metrics.prom`
+        (sudo cat on the host).
+      render: text

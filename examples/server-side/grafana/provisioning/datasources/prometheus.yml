@@ -1,0 +1,21 @@
+apiVersion: 1
+
+# Pinned UID so dashboard JSON can reference it stably across
+# re-provisioning. Without the explicit UID, Grafana picks a hash
+# and dashboards hardcoded to `uid: "prometheus"` silently can't
+# run their queries.
+#
+# `deleteDatasources` purges any pre-existing record with the same
+# name before re-creating — Grafana refuses to change the UID of an
+# `editable: false` datasource in place.
+deleteDatasources:
+  - name: Prometheus
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

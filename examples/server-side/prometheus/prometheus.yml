@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules.yml
+
+# Push-only — host-agent containers do all the scraping locally and
+# remote_write into us. No scrape_configs needed for them; their
+# `external_labels.host = $(hostname -s)` carries through as the
+# dashboard's host label.
+#
+# Keep prometheus's self-scrape so /metrics works.
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

@@ -1,0 +1,75 @@
+# host-agent — one container, s6-supervised, bundles the Dell fan
+# controller + Prometheus exporters (node, cadvisor, ipmi, smartctl,
+# nvidia-gpu). Each sub-process probes its hardware on start and
+# `sleep infinity` if absent, so the same image drops onto any Linux
+# Docker host (Debian/Ubuntu, Unraid, plain Docker, Dell or not).
+#
+# After a host has this compose in place, all future updates flow via
+# watchtower bumping the image tag — no further per-host action.
+#
+# GPU hosts: set HOST_AGENT_RUNTIME=nvidia in the environment (e.g. via
+# infra/.env) and the NVIDIA Container Runtime will inject nvidia-smi
+# at start, enabling the nvidia-gpu-exporter sub-service. Default is
+# runc — harmless on hosts without nvidia-container-toolkit.
+services:
+  host-agent:
+    # Image source. Set HOST_AGENT_IMAGE in infra/.env (or the env) to
+    # a registry you can pull from — e.g. ghcr.io/<user>/host-agent:latest
+    # for an upstream build, or your own registry for an internal build.
+    image: ${HOST_AGENT_IMAGE:?HOST_AGENT_IMAGE must be set in infra/.env}
+    container_name: host-agent
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
+    # Host cgroup namespace — without this, cadvisor reads its own
+    # cgroup tree (just /), not the host's, even with /sys mounted.
+    cgroup: host
+    # pid: host omitted — s6-overlay requires PID 1, and the host
+    # metrics we display (CPU, mem, disk, net, load, textfile) don't
+    # need host PID visibility. Sub-services that ask for it (cadvisor)
+    # have their own access via the docker socket.
+    runtime: ${HOST_AGENT_RUNTIME:-runc}
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=utility
+      # Remote-write target for the embedded vmagent. Required —
+      # vmagent will refuse to start without a URL (sibling exporters
+      # still run, you just won't get metrics in your Prometheus). Set
+      # in infra/.env. The receiver must run Prometheus 2.33+ with
+      # --web.enable-remote-write-receiver, or any compatible TSDB
+      # (VictoriaMetrics, Grafana Mimir, Cortex, Grafana Cloud).
+      - PROMETHEUS_REMOTE_WRITE_URL=${PROMETHEUS_REMOTE_WRITE_URL:?PROMETHEUS_REMOTE_WRITE_URL must be set in infra/.env}
+      # Auth (optional; bearer XOR basic). See host-agent/s6/vmagent/run.
+      - PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN=${PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN:-}
+      - PROMETHEUS_REMOTE_WRITE_USERNAME=${PROMETHEUS_REMOTE_WRITE_USERNAME:-}
+      - PROMETHEUS_REMOTE_WRITE_PASSWORD=${PROMETHEUS_REMOTE_WRITE_PASSWORD:-}
+      - PROMETHEUS_REMOTE_WRITE_TLS_INSECURE_SKIP_VERIFY=${PROMETHEUS_REMOTE_WRITE_TLS_INSECURE_SKIP_VERIFY:-}
+    # Mount set:
+    #   /:/host:ro,rslave        — node-exporter rootfs/procfs view
+    #   /sys:/sys:ro             — cadvisor reads /sys/fs/cgroup directly; even
+    #                              with --privileged the container still has its
+    #                              own cgroup namespace, so we hand it the host's
+    #                              /sys. Without this, cadvisor sees no containers.
+    #   /run:/run:ro             — cadvisor opens /run/docker.sock AND
+    #                              /run/containerd/containerd.sock at hardcoded
+    #                              paths; --docker=unix://... only redirects the
+    #                              docker socket, not containerd. /host/run/...
+    #                              doesn't help because cadvisor doesn't look there.
+    #   /var/lib/docker:ro       — cadvisor reads container metadata from here.
+    #   /dev:/dev                — ipmitool + smartctl hardcode /dev/* paths and
+    #                              Docker doesn't auto-import host devices.
+    #   /var/lib/fan-controller       — fan EWMA baseline + vmagent WAL persistence.
+    volumes:
+      - /:/host:ro,rslave
+      - /sys:/sys:ro
+      # cadvisor needs two specific sockets at their hardcoded paths.
+      # Binding the whole host /run over the container's /run breaks
+      # s6-overlay (it writes its own bootstrap state there). So bind
+      # just the two files we actually need.
+      - /run/docker.sock:/run/docker.sock
+      - /run/containerd:/run/containerd:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev:/dev
+      - /var/lib/fan-controller:/var/lib/fan-controller
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"

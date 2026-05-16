@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/mattjackson/host-agent/security/advisories/new
+    about: Please report vulnerabilities via Security Advisories, not public issues.
+  - name: Question or discussion
+    url: https://github.com/mattjackson/host-agent/discussions
+    about: Open-ended questions, hardware compatibility chats, tuning advice.

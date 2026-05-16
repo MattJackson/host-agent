@@ -1,0 +1,20 @@
+#!/usr/bin/env sh
+# Host /run is bind-mounted at /run (not /host/run), which gives cadvisor
+# both /run/docker.sock and /run/containerd/containerd.sock at the paths
+# it hardcodes internally. --docker=unix://... can redirect the docker
+# socket but cadvisor also needs containerd's socket to register the
+# docker container factory, and that path is not configurable.
+if [ ! -S /run/docker.sock ]; then
+  echo "[cadvisor] /run/docker.sock not present — cadvisor disabled (mount the host /run)"
+  exec sleep infinity
+fi
+
+# Port 8089 (not 8080) to avoid colliding with apps that commonly bind
+# 8080 on host network (e.g. unifi-os).
+exec /usr/local/bin/cadvisor \
+  --port=8089 \
+  --docker_only=true \
+  --store_container_labels=true \
+  --housekeeping_interval=30s \
+  --max_housekeeping_interval=60s \
+  --disable_metrics=referenced_memory,tcp,udp,advtcp,process,hugetlb,resctrl
