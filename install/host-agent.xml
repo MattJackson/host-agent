@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>host-agent</Name>
-  <Repository>ghcr.io/YOUR_USER/host-agent:latest</Repository>
+  <Repository>ghcr.io/mattjackson/host-agent:latest</Repository>
   <Registry/>
   <Network>host</Network>
   <MyIP/>
