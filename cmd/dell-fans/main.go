@@ -1,10 +1,8 @@
-// dell-fan-controller — Go v2 of the Dell PowerEdge adaptive fan
-// controller. Drop-in replacement for dell-fan-controller.sh: same
-// vendor guard, same profile system, same metrics+state file format,
-// same IPMI commands on the wire.
-//
-// Feature-flag selection lives in s6/dell-fans/run; this binary is
-// invoked when DELL_FANS_IMPL=go. See host-agent/README.md.
+// dell-fan-controller — Dell PowerEdge adaptive fan controller.
+// Per-class PIDs (CPU, passive_gpu, active_gpu, hdd, ssd) emit
+// candidate fan speeds; max() wins, plus per-class proximity floors
+// and an active-GPU assist lift. EWMA-tracked equilibrium baseline
+// persisted to /var/lib/dell-fans/state/base. See host-agent/README.md.
 package main
 
 import (
@@ -155,7 +153,9 @@ func runCycle(ctx context.Context, c *controller.Controller) {
 	_ = c.Cycle(cctx)
 }
 
-// detectModel mirrors dell-fan-controller.sh#detect_model exactly:
+// detectModel maps /sys/class/dmi/id/product_name to a profile slug.
+// Matches s6/vmagent/run#detect_model byte-for-byte so the version
+// label and the profile loaded by the controller stay in lockstep:
 //
 //	raw=$(cat /sys/class/dmi/id/product_name)
 //	raw="${raw#PowerEdge }"

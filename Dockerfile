@@ -114,15 +114,10 @@ COPY --from=builder /smartctl_exporter    /usr/local/bin/smartctl_exporter
 COPY --from=builder /nvidia_gpu_exporter  /usr/local/bin/nvidia_gpu_exporter
 COPY --from=builder /vmagent              /usr/local/bin/vmagent
 
-# Fan controller (both impls) + per-chassis profiles. s6/dell-fans/run
-# selects between them via DELL_FANS_IMPL (default: bash). This lets us
-# ship one image that can run either while we gradually flip hosts to
-# the Go v2 and watch for regressions.
-COPY dell-fan-controller.sh             /usr/local/bin/dell-fan-controller.sh
+# Fan controller (Go v2) + per-chassis profiles.
 COPY --from=go-builder /dell-fan-controller /usr/local/bin/dell-fan-controller
-COPY profiles/                          /etc/dell-fans/profiles/
-RUN chmod +x /usr/local/bin/dell-fan-controller.sh \
-         /usr/local/bin/dell-fan-controller
+COPY profiles/                              /etc/dell-fans/profiles/
+RUN chmod +x /usr/local/bin/dell-fan-controller
 
 # s6 service definitions: one per sub-service, each probes its hardware
 COPY s6/ /etc/s6-overlay/s6-rc.d/

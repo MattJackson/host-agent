@@ -196,9 +196,11 @@ beats default.
 ```
 host-agent/
 ├── README.md                    # this file
-├── Dockerfile                   # multi-stage: builder + s6-overlay + binaries
-├── dell-fan-controller.sh       # the controller (one bash script)
-├── profiles/                    # per-chassis tuning
+├── Dockerfile                   # multi-stage: go-builder + exporter-fetch + s6-overlay
+├── go.mod                       # zero external deps; vendor-free build
+├── cmd/dell-fans/               # controller entry point
+├── internal/                    # PID/proximity/EWMA + sensors + IPMI + state + metrics
+├── profiles/                    # per-chassis tuning (r730xd, r730, r410, xc730xd-12, default)
 ├── s6/                          # s6-overlay service tree
 │   ├── dell-fans/               (controller)
 │   ├── node-exporter/           (:9100)
@@ -206,6 +208,7 @@ host-agent/
 │   ├── ipmi-exporter/           (:9290)
 │   ├── smartctl-exporter/       (:9633)
 │   ├── nvidia-gpu-exporter/     (:9835)
+│   ├── vmagent/                 (push to central Prometheus)
 │   └── user/contents.d/         (enables each service in default bundle)
 └── infra/
     ├── docker-compose.yml       # single service, paste-anywhere

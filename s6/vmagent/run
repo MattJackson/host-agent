@@ -28,7 +28,7 @@ PROFILE_DIR=/etc/dell-fans/profiles
 # Image build version (short git SHA, written at build time).
 VERSION_LABEL="$(cat /etc/host-agent-version 2>/dev/null || echo dev)"
 
-# detect_model: matches dell-fan-controller.sh#detect_model exactly so
+# detect_model: matches cmd/dell-fans/main.go#detectModel exactly so
 # vmagent loads the same profile the fan controller does. Must run
 # BEFORE the host_agent_info write so MODEL/PROFILE_FILE are populated.
 detect_model() {
