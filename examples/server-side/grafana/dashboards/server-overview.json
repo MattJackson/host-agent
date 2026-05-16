@@ -64,7 +64,7 @@
       "type": "stat",
       "gridPos": {
         "h": 4,
-        "w": 12,
+        "w": 8,
         "x": 0,
         "y": 6
       },
@@ -106,18 +106,20 @@
     },
     {
       "id": 72,
-      "title": "Inlet",
+      "title": "Chassis",
+      "description": "Whatever non-CPU temperature sensors the BMC reports — Dell PowerEdge typically Inlet + Exhaust, R410 just Ambient, others vary. Server-agnostic: panel shows the sensor names verbatim (stripped of trailing 'Temp' suffix) so a Supermicro 'System Temp' or HPE 'Front Ambient' would render the same way.",
       "type": "stat",
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 12,
+        "w": 8,
+        "x": 8,
         "y": 6
       },
       "targets": [
         {
-          "expr": "ipmi_temperature_celsius{host=~\"$host\",class=\"inlet\"}",
-          "legendFormat": "Inlet",
+          "refId": "A",
+          "expr": "label_replace(ipmi_temperature_celsius{host=~\"$host\",class!~\"cpu.*\"}, \"label\", \"$1\", \"name\", \"(.+?)(?: Temp)?$\")",
+          "legendFormat": "{{label}}",
           "instant": true
         }
       ],
@@ -126,74 +128,32 @@
           "unit": "celsius",
           "thresholds": {
             "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 30
-              },
-              {
-                "color": "red",
-                "value": 40
-              }
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 30 },
+              { "color": "red", "value": 40 }
             ]
           }
-        }
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
         },
-        "graphMode": "none"
-      }
-    },
-    {
-      "id": 73,
-      "title": "Exhaust",
-      "type": "stat",
-      "gridPos": {
-        "h": 4,
-        "w": 6,
-        "x": 18,
-        "y": 6
-      },
-      "targets": [
-        {
-          "expr": "ipmi_temperature_celsius{host=~\"$host\",class=\"exhaust\"}",
-          "legendFormat": "Exhaust",
-          "instant": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "celsius",
-          "thresholds": {
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 55
-              },
-              {
-                "color": "red",
-                "value": 70
-              }
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": "(?i)^(Exhaust|Outlet|Rear).*" },
+            "properties": [
+              { "id": "thresholds", "value": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 55 },
+                  { "color": "red", "value": 70 }
+                ]
+              }}
             ]
           }
-        }
+        ]
       },
       "options": {
+        "orientation": "vertical",
         "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
+          "calcs": ["lastNotNull"]
         },
         "graphMode": "none"
       }
@@ -205,7 +165,7 @@
       "type": "stat",
       "gridPos": {
         "h": 4,
-        "w": 18,
+        "w": 24,
         "x": 0,
         "y": 10
       },
@@ -517,13 +477,13 @@
     {
       "id": 92,
       "title": "GPU",
-      "description": "GPU die temperature — lives in the temperatures section because it's a thermal signal that feeds the fan controller, not a usage metric.",
+      "description": "GPU die temperature — lives in the temperatures section because it's a thermal signal that feeds the fan controller, not a usage metric. Empty on hosts without GPUs.",
       "type": "stat",
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 18,
-        "y": 10
+        "w": 8,
+        "x": 16,
+        "y": 6
       },
       "targets": [
         {
