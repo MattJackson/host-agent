@@ -1,0 +1,73 @@
+#!/usr/bin/env sh
+# unraid-disks: emit a textfile metric mapping Unraid's slot labels
+# (disk1, disk2, parity, cache, ...) to Linux device names (sdb, sdc, ...).
+# Lets the dashboard rewrite "sdc HDD" → "disk1 HDD" on Unraid hosts so
+# bay identification matches Unraid's own UI.
+#
+# Self-disables on non-Unraid hosts: probes /host/etc/unraid-version
+# which Unraid ships as part of every install and nothing else carries.
+#
+# Reads /host/var/local/emhttp/disks.ini — Unraid's authoritative array
+# state file maintained by the emhttp service. Format is per-disk
+# INI sections:
+#
+#     ["disk1"]
+#     idx="1"
+#     name="disk1"
+#     device="sdc"
+#     ...
+#
+# Output: /var/lib/fan-controller/state/unraid_disks.prom — picked up by
+# node-exporter's textfile collector on the next :9100 scrape.
+
+set -eu
+
+UNRAID_MARKER=/host/etc/unraid-version
+DISKS_INI=/host/var/local/emhttp/disks.ini
+TEXTFILE_DIR=/var/lib/fan-controller/state
+OUT="$TEXTFILE_DIR/unraid_disks.prom"
+TMP="$TEXTFILE_DIR/.unraid_disks.prom.tmp"
+INTERVAL=60
+
+if [ ! -f "$UNRAID_MARKER" ]; then
+  echo "[unraid-disks] /host/etc/unraid-version absent — not an Unraid host, disabling"
+  exec sleep infinity
+fi
+
+echo "[unraid-disks] Unraid host detected ($(cat "$UNRAID_MARKER" 2>/dev/null | head -1))"
+mkdir -p "$TEXTFILE_DIR"
+
+while true; do
+  if [ ! -r "$DISKS_INI" ]; then
+    # File can momentarily disappear during emhttp updates. Skip this cycle.
+    sleep "$INTERVAL"
+    continue
+  fi
+  {
+    echo '# HELP unraid_disk_info Mapping of Unraid array slot label (disk1, parity, cache, ...) to Linux device name. Join on (host, device) to rewrite disk labels in dashboards.'
+    echo '# TYPE unraid_disk_info gauge'
+    awk '
+      BEGIN { slot = ""; device = "" }
+      /^\[".*"\]$/ {
+        # Section header: ["disk1"] → slot=disk1
+        slot = $0
+        sub(/^\["/, "", slot)
+        sub(/"\]$/, "", slot)
+        device = ""
+        next
+      }
+      /^device="/ {
+        device = $0
+        sub(/^device="/, "", device)
+        sub(/"$/, "", device)
+      }
+      slot != "" && device != "" {
+        printf "unraid_disk_info{slot=\"%s\",device=\"%s\"} 1\n", slot, device
+        slot = ""
+        device = ""
+      }
+    ' "$DISKS_INI"
+  } > "$TMP"
+  mv "$TMP" "$OUT"
+  sleep "$INTERVAL"
+done
