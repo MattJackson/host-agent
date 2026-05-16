@@ -44,9 +44,33 @@ while true; do
     continue
   fi
   {
-    echo '# HELP unraid_disk_info Mapping of Unraid array slot label (disk1, parity, cache, ...) to Linux device name. Join on (host, device) to rewrite disk labels in dashboards.'
+    echo '# HELP unraid_disk_info Mapping of Unraid array slot label (disk1, parity, cache, ...) to Linux device name. Join on (host, device) to rewrite disk labels in dashboards. The sort_key label gives a lex-sortable string that produces natural Unraid display order: parity → disk → cache → flash.'
     echo '# TYPE unraid_disk_info gauge'
     awk '
+      function sort_key(s,   p, n) {
+        # Generate a lex-sortable key that yields natural Unraid order:
+        #   parity, parity2, parity3, ...    → "1_parity_NN"
+        #   disk1, disk2, ..., disk29        → "2_disk_NN"
+        #   cache, cache2, ...               → "3_cache_NN"
+        #   flash                            → "9_flash"
+        #   anything else                    → "5_<slot>"
+        if (s == "flash") return "9_flash"
+        if (s ~ /^parity[0-9]*$/) {
+          p = s; sub(/^parity/, "", p)
+          n = (p == "" ? 1 : p + 0)
+          return sprintf("1_parity_%02d", n)
+        }
+        if (s ~ /^disk[0-9]+$/) {
+          p = s; sub(/^disk/, "", p)
+          return sprintf("2_disk_%02d", p + 0)
+        }
+        if (s ~ /^cache[0-9]*$/) {
+          p = s; sub(/^cache/, "", p)
+          n = (p == "" ? 1 : p + 0)
+          return sprintf("3_cache_%02d", n)
+        }
+        return "5_" s
+      }
       BEGIN { slot = ""; device = "" }
       /^\[".*"\]$/ {
         # Section header: ["disk1"] → slot=disk1
@@ -62,7 +86,7 @@ while true; do
         sub(/"$/, "", device)
       }
       slot != "" && device != "" {
-        printf "unraid_disk_info{slot=\"%s\",device=\"%s\"} 1\n", slot, device
+        printf "unraid_disk_info{slot=\"%s\",device=\"%s\",sort_key=\"%s\"} 1\n", slot, device, sort_key(slot)
         slot = ""
         device = ""
       }
