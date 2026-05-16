@@ -122,20 +122,21 @@ Drop the two env vars in an `.env` next to the compose, then `docker compose up 
 
 ### Option C — Unraid (XML template direct from GitHub)
 
-The `install/host-agent.xml` template is consumable directly from GitHub — no Community Applications submission needed.
+The `install/host-agent.xml` template is consumable directly from GitHub — no Community Applications submission needed. **The URL is set via a file in appdata, not the template** — that decouples your config from Unraid's Force Update behavior.
 
-**1. Drop the template into Unraid's user-templates directory.** Unraid's Add Container form doesn't accept URLs, so fetch the XML once from a console or SSH session:
+**One-time SSH setup** (does both the URL file and the template fetch in one go):
 
 ```sh
+mkdir -p /mnt/user/appdata/host-agent/config
+echo 'http://your-prometheus:9090/api/v1/write' \
+  > /mnt/user/appdata/host-agent/config/remote_write_url
 curl -sfLO --output-dir /boot/config/plugins/dockerMan/templates-user \
   https://raw.githubusercontent.com/mattjackson/host-agent/main/install/host-agent.xml
 ```
 
-**2. Add the container from the web UI.** Docker tab → **Add Container** → in the **Template** dropdown at the top, pick **host-agent** under "User templates". The form auto-populates.
+**Then in the web UI**: Docker tab → **Add Container** → Template dropdown → pick **host-agent** under "User templates" → **Apply**.
 
-**3. Fill in the always-visible Prometheus remote-write URL.** Toggle **Advanced View** in the top right to expose the optional bearer-token / basic-auth / TLS-skip fields if your Prometheus needs them.
-
-**4. Click Apply** at the bottom — pulls the image, starts the container, shows you the logs.
+That's it. No env vars to fill in. If your Prometheus needs auth, toggle **Advanced View** in the form to expose the optional bearer-token / basic-auth / TLS-skip fields.
 
 All paths and the `--cgroupns=host` flag are pre-baked into the template. To get listed in Community Applications search, submit the XML to [Squidly271/AppFeed](https://github.com/Squidly271/AppFeed) — not required for personal use.
 
