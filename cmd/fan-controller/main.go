@@ -25,6 +25,7 @@ import (
 	"github.com/pq/docker-server/host-agent/internal/controller"
 	"github.com/pq/docker-server/host-agent/internal/envelope"
 	"github.com/pq/docker-server/host-agent/internal/ipmi"
+	"github.com/pq/docker-server/host-agent/internal/livetargets"
 	"github.com/pq/docker-server/host-agent/internal/runner"
 	"github.com/pq/docker-server/host-agent/internal/sensors"
 )
@@ -150,14 +151,20 @@ func main() {
 			logger.Printf("WARN: failed to build reconciler: %v (adaptive disabled)", err)
 			adaptiveDisabled = true
 		} else {
-			logger.Printf("adaptive reconciler: dry-run, cycle=%dmin, state=%s, overrides=%v", adaptiveCycleMin, statePath, overrideClasses)
+			logger.Printf("adaptive reconciler: active, cycle=%dmin, state=%s, overrides=%v", adaptiveCycleMin, statePath, overrideClasses)
 		}
 	}
+
+	// liveTargets is the concurrency-safe handoff between the
+	// reconciler (writer goroutine) and the PID main goroutine (reader).
+	// When adaptive is disabled it stays empty and ApplyTo is a no-op,
+	// so cfg keeps its v1-derived values.
+	liveTargets := livetargets.New()
 
 	if adaptiveDisabled {
 		logger.Printf("adaptive reconciler: disabled by HOST_AGENT_ADAPTIVE_DISABLED")
 	} else {
-		go runAdaptiveLoop(ctx, logger, recon, time.NewTicker(time.Duration(adaptiveCycleMin)*time.Minute))
+		go runAdaptiveLoop(ctx, logger, recon, liveTargets, time.NewTicker(time.Duration(adaptiveCycleMin)*time.Minute))
 	}
 
 	// 3. Vendor guard — refuse to start on non-Dell BMCs.
@@ -217,6 +224,8 @@ func main() {
 	defer ticker.Stop()
 
 	// First cycle runs immediately (don't wait for the first tick).
+	// Pick up any pending live-target updates before the cycle reads cfg.
+	liveTargets.ApplyTo(cfg)
 	runCycle(ctx, c)
 	sampleObserver(obs, c)
 	if err := adaptive.WriteAdaptiveMetrics(adaptiveMetricsFile, obs, recon); err != nil {
@@ -235,6 +244,9 @@ func main() {
 			hcancel()
 			return
 		case <-ticker.C:
+			// Pick up any pending live-target updates from the adaptive
+			// goroutine before the cycle reads cfg.
+			liveTargets.ApplyTo(cfg)
 			runCycle(ctx, c)
 			sampleObserver(obs, c)
 			if err := adaptive.WriteAdaptiveMetrics(adaptiveMetricsFile, obs, recon); err != nil {
@@ -394,12 +406,15 @@ func (osFS) ReadDir(name string) ([]fs.DirEntry, error) {
 }
 
 // runAdaptiveLoop drives the slow intent-layer reconcile pass. Fires
-// every ADAPTIVE_CYCLE_MINUTES. DRY-RUN in v0.2.2 — logs decisions
-// and persists state, but does NOT mutate the live cfg's per-class
-// targets. Active drift lands in v0.3.0.
+// every ADAPTIVE_CYCLE_MINUTES. Each action with NewTarget != OldTarget
+// (or NewDeadband != OldDeadband) is staged into liveTargets, which
+// the PID main goroutine picks up immediately before its next cycle.
+//
+// Settled/warming-up/skipped actions are not logged or applied —
+// they're per-cycle no-ops and would just spam the journal.
 //
 // Exits when ctx is cancelled.
-func runAdaptiveLoop(ctx context.Context, logger controller.Logger, r *adaptive.Reconciler, t *time.Ticker) {
+func runAdaptiveLoop(ctx context.Context, logger controller.Logger, r *adaptive.Reconciler, lt *livetargets.Store, t *time.Ticker) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -414,7 +429,9 @@ func runAdaptiveLoop(ctx context.Context, logger controller.Logger, r *adaptive.
 				if a.Reason == adaptive.DriftReasonSettled || a.Reason == adaptive.DriftReasonWarmup || a.Reason == adaptive.DriftReasonSkipped {
 					continue
 				}
-				logger.Printf("adaptive[dry-run]: class=%s reason=%s target %d->%d deadband %d->%d (mean=%.1f stddev=%.2f n=%d)",
+				// Stage the new target+deadband for the PID to pick up.
+				lt.Set(a.Class, a.NewTarget, a.NewDeadband)
+				logger.Printf("adaptive: class=%s reason=%s target %d->%d deadband %d->%d (mean=%.1f stddev=%.2f n=%d)",
 					a.Class, a.Reason, a.OldTarget, a.NewTarget, a.OldDeadband, a.NewDeadband,
 					a.TempMean, a.TempStdDev, a.SamplesUsed)
 			}
