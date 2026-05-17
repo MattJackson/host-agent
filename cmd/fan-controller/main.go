@@ -115,19 +115,21 @@ func main() {
 	}
 	windowSize := windowMinutes * 60 / intervalSec
 
+	// v2: per-class env-var overrides (not profile entries) disable
+	// adaptive for that class. Matches ApplyMode's env-var-only rule.
 	var perClassOverrides map[envelope.Class]bool
-	if !adaptiveDisabled && len(cfg.Raw) > 0 {
+	if !adaptiveDisabled {
 		perClassOverrides = make(map[envelope.Class]bool)
-		if _, ok := cfg.Raw["CPU_TARGET"]; ok {
+		if _, ok := os.LookupEnv("CPU_TARGET"); ok {
 			perClassOverrides[envelope.CPU] = true
 		}
-		if _, ok := cfg.Raw["GPU_TARGET"]; ok {
+		if _, ok := os.LookupEnv("GPU_TARGET"); ok {
 			perClassOverrides[envelope.PassiveGPU] = true
 		}
-		if _, ok := cfg.Raw["HDD_TARGET"]; ok {
+		if _, ok := os.LookupEnv("HDD_TARGET"); ok {
 			perClassOverrides[envelope.HDD] = true
 		}
-		if _, ok := cfg.Raw["SSD_TARGET"]; ok {
+		if _, ok := os.LookupEnv("SSD_TARGET"); ok {
 			perClassOverrides[envelope.SSD] = true
 		}
 	}
