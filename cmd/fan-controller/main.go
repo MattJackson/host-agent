@@ -32,10 +32,11 @@ import (
 var version = "dev"
 
 const (
-	profileDir  = "/etc/fan-controller/profiles"
-	stateDir    = "/var/lib/fan-controller/state"
-	stateFile   = "/var/lib/fan-controller/state/base"
-	metricsFile = "/var/lib/fan-controller/state/metrics.prom"
+	profileDir          = "/etc/fan-controller/profiles"
+	stateDir            = "/var/lib/fan-controller/state"
+	stateFile           = "/var/lib/fan-controller/state/base"
+	metricsFile         = "/var/lib/fan-controller/state/metrics.prom"
+	adaptiveMetricsFile = "/var/lib/fan-controller/state/adaptive.prom"
 )
 
 // stdLogger emits the bash log line format: "YYYY-MM-DD HH:MM:SS - msg".
@@ -143,6 +144,9 @@ func main() {
 	// First cycle runs immediately (don't wait for the first tick).
 	runCycle(ctx, c)
 	sampleObserver(obs, c)
+	if err := adaptive.WriteObserverMetrics(adaptiveMetricsFile, obs); err != nil {
+		logger.Printf("WARN: adaptive metrics write: %v", err)
+	}
 
 	for {
 		select {
@@ -158,6 +162,9 @@ func main() {
 		case <-ticker.C:
 			runCycle(ctx, c)
 			sampleObserver(obs, c)
+			if err := adaptive.WriteObserverMetrics(adaptiveMetricsFile, obs); err != nil {
+				logger.Printf("WARN: adaptive metrics write: %v", err)
+			}
 		}
 	}
 }
