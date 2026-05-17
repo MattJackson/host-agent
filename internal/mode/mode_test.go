@@ -1,6 +1,7 @@
 package mode
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/pq/docker-server/host-agent/internal/envelope"
@@ -157,30 +158,185 @@ func TestParse(t *testing.T) {
 	}
 }
 
-func TestScore_AllStubs_ReturnZero(t *testing.T) {
-	stats := WindowStats{
-		TempMean:      65.0,
-		TempStdDev:    2.0,
-		TempP10:       62.0,
-		TempP50:       65.0,
-		TempP90:       68.0,
-		FanDemandMean: 45.0,
-		FanChangeRate: 3.0,
-		InletMean:     22.0,
-		InletStdDev:   1.0,
-		Samples:       480,
+const scoreTestEpsilon = 1e-9
+
+func floatNear(a, b, eps float64) bool {
+	d := a - b
+	if d < 0 {
+		d = -d
+	}
+	return d < eps
+}
+
+func TestScore_MaxCool_Formula(t *testing.T) {
+	tests := []struct {
+		stats WindowStats
+		want  float64
+	}{
+		{WindowStats{TempMean: 70, TempStdDev: 0}, 70.0},
+		{WindowStats{TempMean: 70, TempStdDev: 2}, 72.0},
+		{WindowStats{TempMean: 60, TempStdDev: 3}, 64.5},
+	}
+
+	env := envelope.DefaultEnvelopes[envelope.PassiveGPU]
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("mean=%v stddev=%v", tt.stats.TempMean, tt.stats.TempStdDev), func(t *testing.T) {
+			scorer := MaxCool.Score()
+			got := scorer(env, tt.stats)
+			if !floatNear(got, tt.want, scoreTestEpsilon) {
+				t.Errorf("score = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestScore_Balanced_Formula(t *testing.T) {
+	tests := []struct {
+		stats WindowStats
+		want  float64
+	}{
+		{WindowStats{TempMean: 65, TempStdDev: 0, FanChangeRate: 0}, 0.0},
+		{WindowStats{TempMean: 68, TempStdDev: 0, FanChangeRate: 0}, 3.0},
+		{WindowStats{TempMean: 60, TempStdDev: 0, FanChangeRate: 4}, 6.2},
+		{WindowStats{TempMean: 65, TempStdDev: 2, FanChangeRate: 0}, 1.2},
 	}
 
 	env := envelope.DefaultEnvelopes[envelope.CPU]
 
-	tests := []Mode{MaxCool, Balanced, MinNoise, Eco}
-	for _, m := range tests {
-		t.Run(m.String(), func(t *testing.T) {
-			scorer := m.Score()
-			got := scorer(env, stats)
-			if got != 0.0 {
-				t.Errorf("score = %v, want 0.0 (stub)", got)
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("mean=%v stddev=%v fanrate=%v", tt.stats.TempMean, tt.stats.TempStdDev, tt.stats.FanChangeRate), func(t *testing.T) {
+			scorer := Balanced.Score()
+			got := scorer(env, tt.stats)
+			if !floatNear(got, tt.want, scoreTestEpsilon) {
+				t.Errorf("score = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestScore_MinNoise_Formula(t *testing.T) {
+	tests := []struct {
+		stats WindowStats
+		want  float64
+	}{
+		{WindowStats{TempMean: 80, TempStdDev: 0, FanChangeRate: 0}, 0.0},
+		{WindowStats{TempMean: 85, TempStdDev: 0, FanChangeRate: 0}, 0.0},
+		{WindowStats{TempMean: 70, TempStdDev: 0, FanChangeRate: 0}, 10.0},
+		{WindowStats{TempMean: 70, TempStdDev: 2, FanChangeRate: 3}, 18.0},
+	}
+
+	env := envelope.DefaultEnvelopes[envelope.PassiveGPU]
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("mean=%v stddev=%v fanrate=%v", tt.stats.TempMean, tt.stats.TempStdDev, tt.stats.FanChangeRate), func(t *testing.T) {
+			scorer := MinNoise.Score()
+			got := scorer(env, tt.stats)
+			if !floatNear(got, tt.want, scoreTestEpsilon) {
+				t.Errorf("score = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestScore_Eco_FallsBackToMinNoise(t *testing.T) {
+	env := envelope.DefaultEnvelopes[envelope.CPU]
+
+	statsList := []WindowStats{
+		{TempMean: 65, TempStdDev: 2, FanChangeRate: 3},
+		{TempMean: 70, TempStdDev: 1.5, FanChangeRate: 5},
+		{TempMean: 80, TempStdDev: 4, FanChangeRate: 0},
+	}
+
+	for _, stats := range statsList {
+		t.Run(fmt.Sprintf("mean=%v stddev=%v fanrate=%v", stats.TempMean, stats.TempStdDev, stats.FanChangeRate), func(t *testing.T) {
+			ecoScorer := Eco.Score()
+			minNoiseScorer := MinNoise.Score()
+
+			gotEco := ecoScorer(env, stats)
+			wantMinNoise := minNoiseScorer(env, stats)
+
+			if !floatNear(gotEco, wantMinNoise, scoreTestEpsilon) {
+				t.Errorf("eco score = %v, want min-noise score = %v", gotEco, wantMinNoise)
+			}
+		})
+	}
+}
+
+func TestScore_Dispatch(t *testing.T) {
+	stats := WindowStats{TempMean: 65, TempStdDev: 2.5, FanChangeRate: 3.0}
+	env := envelope.DefaultEnvelopes[envelope.CPU]
+
+	tests := []struct {
+		mode Mode
+		want func(env envelope.Envelope, s WindowStats) float64
+	}{
+		{MaxCool, scoreMaxCool},
+		{Balanced, scoreBalanced},
+		{MinNoise, scoreMinNoise},
+		{Eco, scoreEco},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.mode.String(), func(t *testing.T) {
+			scorer := tt.mode.Score()
+			got := scorer(env, stats)
+			want := tt.want(env, stats)
+			if !floatNear(got, want, scoreTestEpsilon) {
+				t.Errorf("dispatched score = %v, want direct call = %v", got, want)
+			}
+		})
+	}
+}
+
+func TestScore_Monotonicity_MaxCool(t *testing.T) {
+	env := envelope.DefaultEnvelopes[envelope.CPU]
+
+	stats60 := WindowStats{TempMean: 60, TempStdDev: 0}
+	stats65 := WindowStats{TempMean: 65, TempStdDev: 0}
+	stats70 := WindowStats{TempMean: 70, TempStdDev: 0}
+
+	scorer := MaxCool.Score()
+
+	score60 := scorer(env, stats60)
+	score65 := scorer(env, stats65)
+	score70 := scorer(env, stats70)
+
+	if !(score60 < score65 && score65 < score70) {
+		t.Errorf("max-cool should increase with temp: got %v < %v < %v", score60, score65, score70)
+	}
+}
+
+func TestScore_Balanced_MinimizedAtPreferredMid(t *testing.T) {
+	env := envelope.DefaultEnvelopes[envelope.HDD] // PreferredMid = 38
+
+	stats35 := WindowStats{TempMean: 35, TempStdDev: 0, FanChangeRate: 0}
+	stats38 := WindowStats{TempMean: 38, TempStdDev: 0, FanChangeRate: 0}
+	stats42 := WindowStats{TempMean: 42, TempStdDev: 0, FanChangeRate: 0}
+
+	scorer := Balanced.Score()
+
+	score35 := scorer(env, stats35)
+	score38 := scorer(env, stats38)
+	score42 := scorer(env, stats42)
+
+	if !(score38 < score35 && score38 < score42) {
+		t.Errorf("balanced should be minimized at PreferredMid: got %v < %v < %v", score38, score35, score42)
+	}
+}
+
+func TestScore_MinNoise_LowerNearPreferredHigh(t *testing.T) {
+	env := envelope.DefaultEnvelopes[envelope.SSD] // PreferredHigh = 60
+
+	stats60 := WindowStats{TempMean: 60, TempStdDev: 0, FanChangeRate: 0}
+	stats55 := WindowStats{TempMean: 55, TempStdDev: 0, FanChangeRate: 0}
+
+	scorer := MinNoise.Score()
+
+	score60 := scorer(env, stats60)
+	score55 := scorer(env, stats55)
+
+	if !(score60 < score55) {
+		t.Errorf("min-noise should be lower near PreferredHigh: got %v < %v", score60, score55)
 	}
 }

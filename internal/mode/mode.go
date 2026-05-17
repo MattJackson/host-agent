@@ -102,21 +102,28 @@ func (m Mode) Score() ScoreFunc {
 }
 
 func scoreMaxCool(env envelope.Envelope, s WindowStats) float64 {
-	// TODO(T11): mean(temp) + 0.5 * variance(temp)
-	return 0.0
+	variance := s.TempStdDev * s.TempStdDev
+	return s.TempMean + 0.5*variance
 }
 
 func scoreBalanced(env envelope.Envelope, s WindowStats) float64 {
-	// TODO(T11): |mean(temp) - PreferredMid| + 0.3*variance + 0.3*fan_change_rate
-	return 0.0
+	variance := s.TempStdDev * s.TempStdDev
+	deviation := s.TempMean - float64(env.PreferredMid)
+	if deviation < 0 {
+		deviation = -deviation
+	}
+	return deviation + 0.3*variance + 0.3*s.FanChangeRate
 }
 
 func scoreMinNoise(env envelope.Envelope, s WindowStats) float64 {
-	// TODO(T11): max(0, PreferredHigh - mean(temp)) + 2.0*fan_change_rate + 0.5*variance
-	return 0.0
+	variance := s.TempStdDev * s.TempStdDev
+	headroom := float64(env.PreferredHigh) - s.TempMean
+	if headroom < 0 {
+		headroom = 0
+	}
+	return headroom + 2.0*s.FanChangeRate + 0.5*variance
 }
 
 func scoreEco(env envelope.Envelope, s WindowStats) float64 {
-	// TODO(T11): estimated_total_watts(temp_distribution, fan_change_rate) — needs fan-power model
-	return 0.0
+	return scoreMinNoise(env, s)
 }
