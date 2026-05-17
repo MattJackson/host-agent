@@ -367,10 +367,6 @@ func (r *Reconciler) reconcileClass(class envelope.Class, now time.Time) DriftAc
 		return action
 	}
 
-	if class == envelope.CPU {
-		fmt.Printf("DEBUG reconcileClass CPU AFTER VAR CHECK: did NOT reset\n")
-	}
-
 	// Score current + projected ±drift.
 	scoreFn := r.o.Mode.Score()
 	statsUp := stats
