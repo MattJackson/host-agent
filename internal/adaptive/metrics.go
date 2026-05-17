@@ -144,73 +144,90 @@ func RenderReconcilerMetrics(r *Reconciler) []byte {
 
 	metrics := r.Metrics()
 
-	// adaptive_mode_info - single series, no class label
+	// adaptive_mode_info — single series, no class label.
 	fmt.Fprintf(&b, "# HELP adaptive_mode_info Current active mode of the adaptive controller.\n")
 	fmt.Fprintf(&b, "# TYPE adaptive_mode_info gauge\n")
 	fmt.Fprintf(&b, "adaptive_mode_info{mode=%q} 1\n", string(metrics.Mode))
 	fmt.Fprintf(&b, "\n")
 
-	// For each class in render order
+	// adaptive_target_celsius — one HELP/TYPE, one line per class.
+	fmt.Fprintf(&b, "# HELP adaptive_target_celsius Current adaptive target temperature for the class.\n")
+	fmt.Fprintf(&b, "# TYPE adaptive_target_celsius gauge\n")
 	for _, c := range classesInRenderOrder {
-		cm, ok := metrics.Classes[c]
-		if !ok {
-			continue
+		if cm, ok := metrics.Classes[c]; ok {
+			fmt.Fprintf(&b, "adaptive_target_celsius{class=%q} %.4f\n", string(c), cm.TargetCelsius)
 		}
-		env := cm.Envelope
+	}
+	fmt.Fprintf(&b, "\n")
 
-		// adaptive_target_celsius
-		fmt.Fprintf(&b, "# HELP adaptive_target_celsius Current adaptive target temperature for the class.\n")
-		fmt.Fprintf(&b, "# TYPE adaptive_target_celsius gauge\n")
-		fmt.Fprintf(&b, "adaptive_target_celsius{class=%q} %.4f\n", string(c), cm.TargetCelsius)
-		fmt.Fprintf(&b, "\n")
+	// adaptive_deadband_celsius
+	fmt.Fprintf(&b, "# HELP adaptive_deadband_celsius Current adaptive deadband for the class.\n")
+	fmt.Fprintf(&b, "# TYPE adaptive_deadband_celsius gauge\n")
+	for _, c := range classesInRenderOrder {
+		if cm, ok := metrics.Classes[c]; ok {
+			fmt.Fprintf(&b, "adaptive_deadband_celsius{class=%q} %.4f\n", string(c), cm.DeadbandCelsius)
+		}
+	}
+	fmt.Fprintf(&b, "\n")
 
-		// adaptive_deadband_celsius
-		fmt.Fprintf(&b, "# HELP adaptive_deadband_celsius Current adaptive deadband for the class.\n")
-		fmt.Fprintf(&b, "# TYPE adaptive_deadband_celsius gauge\n")
-		fmt.Fprintf(&b, "adaptive_deadband_celsius{class=%q} %.4f\n", string(c), cm.DeadbandCelsius)
-		fmt.Fprintf(&b, "\n")
+	// adaptive_envelope_preferred_low
+	fmt.Fprintf(&b, "# HELP adaptive_envelope_preferred_low Envelope preferred-low temperature for the class.\n")
+	fmt.Fprintf(&b, "# TYPE adaptive_envelope_preferred_low gauge\n")
+	for _, c := range classesInRenderOrder {
+		if cm, ok := metrics.Classes[c]; ok {
+			fmt.Fprintf(&b, "adaptive_envelope_preferred_low{class=%q} %d\n", string(c), cm.Envelope.PreferredLow)
+		}
+	}
+	fmt.Fprintf(&b, "\n")
 
-		// adaptive_envelope_preferred_low
-		fmt.Fprintf(&b, "# HELP adaptive_envelope_preferred_low Envelope preferred-low temperature for the class.\n")
-		fmt.Fprintf(&b, "# TYPE adaptive_envelope_preferred_low gauge\n")
-		fmt.Fprintf(&b, "adaptive_envelope_preferred_low{class=%q} %d\n", string(c), env.PreferredLow)
-		fmt.Fprintf(&b, "\n")
+	// adaptive_envelope_preferred_high
+	fmt.Fprintf(&b, "# HELP adaptive_envelope_preferred_high Envelope preferred-high temperature for the class.\n")
+	fmt.Fprintf(&b, "# TYPE adaptive_envelope_preferred_high gauge\n")
+	for _, c := range classesInRenderOrder {
+		if cm, ok := metrics.Classes[c]; ok {
+			fmt.Fprintf(&b, "adaptive_envelope_preferred_high{class=%q} %d\n", string(c), cm.Envelope.PreferredHigh)
+		}
+	}
+	fmt.Fprintf(&b, "\n")
 
-		// adaptive_envelope_preferred_high
-		fmt.Fprintf(&b, "# HELP adaptive_envelope_preferred_high Envelope preferred-high temperature for the class.\n")
-		fmt.Fprintf(&b, "# TYPE adaptive_envelope_preferred_high gauge\n")
-		fmt.Fprintf(&b, "adaptive_envelope_preferred_high{class=%q} %d\n", string(c), env.PreferredHigh)
-		fmt.Fprintf(&b, "\n")
+	// adaptive_envelope_max_safe
+	fmt.Fprintf(&b, "# HELP adaptive_envelope_max_safe Envelope max-safe temperature for the class.\n")
+	fmt.Fprintf(&b, "# TYPE adaptive_envelope_max_safe gauge\n")
+	for _, c := range classesInRenderOrder {
+		if cm, ok := metrics.Classes[c]; ok {
+			fmt.Fprintf(&b, "adaptive_envelope_max_safe{class=%q} %d\n", string(c), cm.Envelope.MaxSafe)
+		}
+	}
+	fmt.Fprintf(&b, "\n")
 
-		// adaptive_envelope_max_safe
-		fmt.Fprintf(&b, "# HELP adaptive_envelope_max_safe Envelope max-safe temperature for the class.\n")
-		fmt.Fprintf(&b, "# TYPE adaptive_envelope_max_safe gauge\n")
-		fmt.Fprintf(&b, "adaptive_envelope_max_safe{class=%q} %d\n", string(c), env.MaxSafe)
-		fmt.Fprintf(&b, "\n")
-
-		// adaptive_target_drifts_total - for each direction that has count > 0
+	// adaptive_target_drifts_total — one HELP/TYPE for the whole metric,
+	// then one line per (class, direction) tuple that has a non-zero count.
+	// Always emit the HELP/TYPE block so the metric exists in Prometheus
+	// even before any drift event happens.
+	fmt.Fprintf(&b, "# HELP adaptive_target_drifts_total Total number of target drift events per class+direction.\n")
+	fmt.Fprintf(&b, "# TYPE adaptive_target_drifts_total counter\n")
+	for _, c := range classesInRenderOrder {
 		if dirs, ok := metrics.Drifts[c]; ok {
-			fmt.Fprintf(&b, "# HELP adaptive_target_drifts_total Total number of target drift events for the class.\n")
-			fmt.Fprintf(&b, "# TYPE adaptive_target_drifts_total counter\n")
-			if count, ok := dirs["up"]; ok && count > 0 {
-				fmt.Fprintf(&b, "adaptive_target_drifts_total{class=%q,direction=%q} %d\n", string(c), "up", count)
+			for _, dir := range []string{"up", "down"} {
+				if count, ok := dirs[dir]; ok && count > 0 {
+					fmt.Fprintf(&b, "adaptive_target_drifts_total{class=%q,direction=%q} %d\n", string(c), dir, count)
+				}
 			}
-			if count, ok := dirs["down"]; ok && count > 0 {
-				fmt.Fprintf(&b, "adaptive_target_drifts_total{class=%q,direction=%q} %d\n", string(c), "down", count)
-			}
-			fmt.Fprintf(&b, "\n")
 		}
+	}
+	fmt.Fprintf(&b, "\n")
 
-		// adaptive_target_resets_total - for each reason that has count > 0
+	// adaptive_target_resets_total — one HELP/TYPE, one line per
+	// (class, reason) tuple with a non-zero count.
+	fmt.Fprintf(&b, "# HELP adaptive_target_resets_total Total number of target reset events per class+reason.\n")
+	fmt.Fprintf(&b, "# TYPE adaptive_target_resets_total counter\n")
+	for _, c := range classesInRenderOrder {
 		if reasons, ok := metrics.Resets[c]; ok {
-			fmt.Fprintf(&b, "# HELP adaptive_target_resets_total Total number of target reset events for the class.\n")
-			fmt.Fprintf(&b, "# TYPE adaptive_target_resets_total counter\n")
 			for reason, count := range reasons {
 				if count > 0 {
 					fmt.Fprintf(&b, "adaptive_target_resets_total{class=%q,reason=%q} %d\n", string(c), string(reason), count)
 				}
 			}
-			fmt.Fprintf(&b, "\n")
 		}
 	}
 

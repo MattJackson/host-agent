@@ -250,20 +250,31 @@ func TestRenderReconcilerMetrics_StableShape(t *testing.T) {
 		}
 	}
 
-	helpCount := 0
-	typeCount := 0
-	for _, line := range lines {
-		if bytes.HasPrefix(line, []byte("# HELP ")) {
-			helpCount++
-		}
-		if bytes.HasPrefix(line, []byte("# TYPE ")) {
-			typeCount++
-		}
+	// Each metric name must appear in EXACTLY ONE HELP/TYPE block, then
+	// have N data lines (one per class label / direction / reason).
+	// Per Prometheus exposition format: re-declaring HELP/TYPE for the
+	// same metric name is invalid and causes node-exporter to drop the
+	// entire file (node_textfile_scrape_error=1). We previously emitted
+	// HELP/TYPE per class — this test caught the bug after deploy.
+	wantMetrics := []string{
+		"adaptive_mode_info",
+		"adaptive_target_celsius",
+		"adaptive_deadband_celsius",
+		"adaptive_envelope_preferred_low",
+		"adaptive_envelope_preferred_high",
+		"adaptive_envelope_max_safe",
+		"adaptive_target_drifts_total",
+		"adaptive_target_resets_total",
 	}
-
-	expectedPairs := 1 + 4*5
-	if helpCount < expectedPairs {
-		t.Errorf("expected at least %d HELP lines, got %d", expectedPairs, helpCount)
+	for _, m := range wantMetrics {
+		helpCount := bytes.Count(output, []byte("# HELP "+m+" "))
+		typeCount := bytes.Count(output, []byte("# TYPE "+m+" "))
+		if helpCount != 1 {
+			t.Errorf("metric %s: HELP appeared %d times, want exactly 1 (Prometheus rejects duplicates)", m, helpCount)
+		}
+		if typeCount != 1 {
+			t.Errorf("metric %s: TYPE appeared %d times, want exactly 1", m, typeCount)
+		}
 	}
 }
 
