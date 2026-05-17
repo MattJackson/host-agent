@@ -6,6 +6,61 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-17
+
+Adaptive setpoint controller. Operators pick **intent** (`HOST_AGENT_MODE`), the agent picks numbers. Per-class temperature targets are no longer fixed — they're derived from hardware envelopes encoded in the agent + the operator's intent, and continuously refined based on observed equilibrium.
+
+See [`docs/adaptive-controller-v2.md`](docs/adaptive-controller-v2.md) for the full design.
+
+### Added
+
+- **`HOST_AGENT_MODE` env var** — one of `max-cool`, `balanced`, `min-noise`, `eco`. When set, replaces fixed per-class temperature targets with mode-derived values from the encoded hardware envelopes. Default behavior (env unset): pure v1, no change for existing deployments.
+- **Class envelopes** (`internal/envelope/`) — per-class temp ranges sourced from real research (Google HDD paper, NVIDIA passive datacenter envelope, Xeon TJunction, NAND specs). One envelope per class: CPU, PassiveGPU, HDD, SSD.
+- **Adaptive observer** (`internal/adaptive/observer.go`) — rolling 2-hour window per class of (temp, fan-demand, inlet) samples with population stddev, nearest-rank percentiles (p10/p50/p90), fan-change-rate, sample discard on sensor faults, all-class reset on inlet-temp shock.
+- **Adaptive reconciler** (`internal/adaptive/reconciler.go`) — every 10 min, scores mode-intent against observed distribution, drifts per-class target ±1°C per cycle toward equilibrium. Bounded by envelope (target never escapes `[PreferredLow, PreferredHigh]`). Variance-reset safety: TempStdDev > 5°C resets to mode-initial.
+- **State persistence** (`internal/adaptive/state.go`) — `/var/lib/host-agent/state/adaptive.json` atomic load/save survives restarts. Mode-change resets, version-mismatch recovers cleanly.
+- **Active drift wiring** (`internal/livetargets/`) — concurrency-safe handoff so reconciler decisions update the live PID setpoint without racing.
+- **Mode-derived score functions** (`internal/mode/`) — formula bodies for max-cool/balanced/min-noise/eco; eco falls back to min-noise behavior until per-chassis fan-power model is added (v2.1).
+- **Soak tests** — 6 scenarios proving §10 convergence + §12 safety properties with scripted thermal traces.
+- **Grafana dashboard "Adaptive Controller"** — 6 panels: per-class targets table, target-vs-envelope timeseries, observed temp distribution, fan change rate, drift+reset event counters, window-fill warmup progress.
+- **New textfile metrics** (in `adaptive.prom`):
+  - `adaptive_mode_info{mode}`
+  - `adaptive_target_celsius{class}` + `adaptive_deadband_celsius{class}`
+  - `adaptive_envelope_preferred_low/preferred_high/max_safe{class}`
+  - `adaptive_window_samples_filled/temp_mean/temp_stddev/temp_p10/p50/p90/fan_change_rate/inlet_mean{class}`
+  - `adaptive_target_drifts_total{class,direction}` + `adaptive_target_resets_total{class,reason}`
+
+### Changed
+
+- Per-class env-var overrides (`CPU_TARGET=70`, `GPU_TARGET=75`, etc.) **still win** as operator intent. Profile-set values (e.g. `default.env`) are treated as v1 fallback and yield to mode-derived values when `HOST_AGENT_MODE` is set.
+
+### Migration
+
+**v1 deployments continue unchanged.** `HOST_AGENT_MODE` is opt-in — without it, ApplyMode is a no-op and v1 behavior is preserved.
+
+To opt into v2 adaptive on an existing host:
+
+```
+HOST_AGENT_MODE=balanced
+```
+
+That's the entire migration. The reconciler immediately starts collecting observer data; first drift decisions land after the 2-hour window fills.
+
+To pin a class at a fixed temp under v2 (e.g. keep an A5500-cooled chassis at 75°C on the passive GPU class):
+
+```
+HOST_AGENT_MODE=balanced
+GPU_TARGET=75
+```
+
+The env var wins; adaptive applies to the other three classes.
+
+### Notes
+
+- Default behavior is intentionally conservative: dry-run-like (no fan changes until the controller has 2 hours of data); rate-limited (max 1°C target change per 10 min); bounded (envelope `[PreferredLow, PreferredHigh]` is a hard ceiling/floor).
+- `HOST_AGENT_ADAPTIVE_DISABLED=true` exists as a kill-switch — keeps observer off entirely if you want to revert during testing.
+- Active GPU classes (own-fan-driven, like RTX A5500) are intentionally **not** managed by the reconciler — they self-cool via their own blowers and use chassis-assist via the existing fan-controller logic.
+
 ## [0.1.5] — 2026-05-16
 
 ### Changed
