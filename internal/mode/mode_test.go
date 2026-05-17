@@ -45,48 +45,48 @@ func TestAll(t *testing.T) {
 
 func TestInitialTarget(t *testing.T) {
 	tests := []struct {
-		name         string
-		mode         Mode
-		expected     map[envelope.Class][2]int // class -> [target, deadband]
+		name     string
+		mode     Mode
+		expected map[envelope.Class][2]int // class -> [target, deadband]
 	}{
 		{
 			name: "MaxCool",
 			mode: MaxCool,
 			expected: map[envelope.Class][2]int{
-				envelope.CPU:       {55, 2},
+				envelope.CPU:        {55, 2},
 				envelope.PassiveGPU: {65, 2},
-				envelope.HDD:       {32, 2},
-				envelope.SSD:       {45, 2},
+				envelope.HDD:        {32, 2},
+				envelope.SSD:        {45, 2},
 			},
 		},
 		{
 			name: "Balanced",
 			mode: Balanced,
 			expected: map[envelope.Class][2]int{
-				envelope.CPU:       {65, 3},
+				envelope.CPU:        {65, 3},
 				envelope.PassiveGPU: {72, 3},
-				envelope.HDD:       {38, 3},
-				envelope.SSD:       {50, 3},
+				envelope.HDD:        {38, 3},
+				envelope.SSD:        {50, 3},
 			},
 		},
 		{
 			name: "MinNoise",
 			mode: MinNoise,
 			expected: map[envelope.Class][2]int{
-				envelope.CPU:       {75, 4},
+				envelope.CPU:        {75, 4},
 				envelope.PassiveGPU: {80, 4},
-				envelope.HDD:       {43, 4},
-				envelope.SSD:       {60, 4},
+				envelope.HDD:        {43, 4},
+				envelope.SSD:        {60, 4},
 			},
 		},
 		{
 			name: "Eco",
 			mode: Eco,
 			expected: map[envelope.Class][2]int{
-				envelope.CPU:       {75, 5},
+				envelope.CPU:        {75, 5},
 				envelope.PassiveGPU: {80, 5},
-				envelope.HDD:       {43, 5},
-				envelope.SSD:       {60, 5},
+				envelope.HDD:        {43, 5},
+				envelope.SSD:        {60, 5},
 			},
 		},
 	}
@@ -121,11 +121,11 @@ func TestInitialTarget_InvalidMode(t *testing.T) {
 
 func TestParse(t *testing.T) {
 	tests := []struct {
-		name     string
-		value    string
-		wantM    Mode
-		wantSet  bool
-		wantErr  bool
+		name    string
+		value   string
+		wantM   Mode
+		wantSet bool
+		wantErr bool
 	}{
 		{"unset", "", Default, false, false},
 		{"empty", "", Default, false, false},

@@ -495,4 +495,3 @@ func TestApplyMode_DeadbandOverride_Independent(t *testing.T) {
 		t.Errorf("SSD target/deadband = %d/%d want 50/3", cfg.SSDTarget, cfg.SSDDeadband)
 	}
 }
-

@@ -41,10 +41,12 @@ func (m Mode) String() string {
 
 // InitialTarget returns the initial PID setpoint and deadband for the
 // given envelope under the given mode. Per design §8.
-//   max-cool:   target = PreferredLow,  deadband = 2
-//   balanced:   target = PreferredMid,  deadband = 3
-//   min-noise:  target = PreferredHigh, deadband = 4
-//   eco:        target = PreferredHigh, deadband = 5
+//
+//	max-cool:   target = PreferredLow,  deadband = 2
+//	balanced:   target = PreferredMid,  deadband = 3
+//	min-noise:  target = PreferredHigh, deadband = 4
+//	eco:        target = PreferredHigh, deadband = 5
+//
 // If mode is invalid, falls back to Balanced.
 func InitialTarget(env envelope.Envelope, m Mode) (target, deadband int) {
 	switch m {

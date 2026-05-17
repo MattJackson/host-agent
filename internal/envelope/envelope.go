@@ -22,12 +22,12 @@ const (
 // preferred operating range. All values are degrees Celsius.
 // Invariant: MinSafe < PreferredLow <= PreferredMid <= PreferredHigh < MaxSafe < Emergency.
 type Envelope struct {
-	MinSafe       int  // below this is suspect (sensor fault)
-	PreferredLow  int  // "max-cool" target
-	PreferredMid  int  // "balanced" target
-	PreferredHigh int  // "min-noise" target
-	MaxSafe       int  // upper bound for adaptive drift (never targeted above this)
-	Emergency     int  // immediate full fans
+	MinSafe       int // below this is suspect (sensor fault)
+	PreferredLow  int // "max-cool" target
+	PreferredMid  int // "balanced" target
+	PreferredHigh int // "min-noise" target
+	MaxSafe       int // upper bound for adaptive drift (never targeted above this)
+	Emergency     int // immediate full fans
 }
 
 // Valid checks the ordering invariant.

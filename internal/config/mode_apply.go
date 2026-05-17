@@ -9,9 +9,9 @@ import (
 // deadband that wasn't explicitly set by an env var or profile file.
 //
 // Precedence (highest first):
-//   1. Per-class env var or profile entry (CPU_TARGET=70, etc.)
-//   2. Mode-derived target via envelope.DefaultEnvelopes + mode.InitialTarget
-//   3. Existing zero value (unchanged)
+//  1. Per-class env var or profile entry (CPU_TARGET=70, etc.)
+//  2. Mode-derived target via envelope.DefaultEnvelopes + mode.InitialTarget
+//  3. Existing zero value (unchanged)
 //
 // Per-class explicitness is determined by presence of the key in cfg.Raw.
 // If a key is present (any source) we treat it as an explicit override
@@ -30,8 +30,8 @@ func ApplyMode(cfg *Config) (resolved mode.Mode, set bool, err error) {
 		targetKey   string
 		deadbandKey string
 		class       envelope.Class
-target      *int
-	deadband    *int
+		target      *int
+		deadband    *int
 	}
 	bindings := []classBinding{
 		{"CPU_TARGET", "CPU_DEADBAND", envelope.CPU, &cfg.CPUTarget, &cfg.CPUDeadband},
