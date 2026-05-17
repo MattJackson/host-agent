@@ -154,6 +154,73 @@ curl -sf https://raw.githubusercontent.com/mattjackson/host-agent/main/install/i
 
 Idempotent (stops + removes any existing `host-agent` container first). All flags hardcoded — to change them, fork or build a new image, don't edit the script per host.
 
+### Option E — from a blank Ubuntu host
+
+End-to-end walkthrough for a freshly installed Ubuntu (or Debian) server with nothing on it yet. Goes from `apt update` to host-agent reporting in your Prometheus. Tested on Ubuntu 24.04 LTS server, fresh install.
+
+```sh
+# 1. Set the hostname FIRST — host-agent stamps every metric series with
+#    `host=$(hostname -s)`, so this determines how the box appears in
+#    Prometheus and Grafana. Skipping this step gives you a series labeled
+#    "ubuntu" (or, on some setups, with no host label at all).
+sudo hostnamectl set-hostname <your-host>
+
+# 2. Ubuntu prerequisites
+sudo apt update && sudo apt install -y ca-certificates curl gnupg lsb-release
+
+# 3. Docker engine (official repo, not the snap)
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+  sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+  https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list
+sudo apt update && sudo apt install -y docker-ce docker-ce-cli containerd.io \
+  docker-buildx-plugin docker-compose-plugin
+sudo usermod -aG docker $USER && newgrp docker
+
+# 4. (Dell hosts only) load the IPMI kernel module so the fan controller
+#    can talk to the BMC. Harmless skip on non-Dell hardware.
+sudo modprobe ipmi_devintf
+echo ipmi_devintf | sudo tee /etc/modules-load.d/ipmi.conf
+
+# 5. State dir (persists fan-controller learnings + vmagent WAL)
+sudo install -d -m 755 /var/lib/host-agent/state
+
+# 6. host-agent — adjust PROMETHEUS_REMOTE_WRITE_URL to your receiver
+sudo docker run -d \
+  --name host-agent \
+  --restart unless-stopped \
+  --privileged \
+  --network host \
+  --cgroupns host \
+  -e PROMETHEUS_REMOTE_WRITE_URL=https://your.prometheus/api/v1/write \
+  -l com.centurylinklabs.watchtower.enable=true \
+  -v /:/host:ro,rslave \
+  -v /sys:/sys:ro \
+  -v /run/docker.sock:/run/docker.sock \
+  -v /run/containerd:/run/containerd:ro \
+  -v /var/lib/docker:/var/lib/docker:ro \
+  -v /dev:/dev \
+  -v /var/lib/host-agent:/var/lib/host-agent \
+  ghcr.io/mattjackson/host-agent:latest
+
+# 7. Watchtower — auto-pulls host-agent updates from ghcr.io (label-gated,
+#    only touches containers with watchtower.enable=true, which host-agent
+#    sets in step 6).
+sudo docker run -d --name watchtower --restart unless-stopped \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  containrrr/watchtower --label-enable --interval 300
+```
+
+Within ~1 minute, the box appears in your Prometheus tagged `host=<your-host>`. From then on, every host-agent release lands automatically (Watchtower's 5-min poll on `:latest`).
+
+> **Watch-outs:**
+> - **Hostname set late.** If you set hostname *after* starting the container, restart it (`docker restart host-agent`) so vmagent re-reads `hostname -s` for its external label.
+> - **All 4 docker mounts are required.** Skipping any of `/`, `/run/docker.sock`, `/run/containerd`, or `/var/lib/docker` silently breaks cadvisor (no container metrics) and gives node-exporter the container's `/proc` view instead of the host's. The minimal `-v /sys:/sys:ro -v /dev:/dev` set is *not* sufficient — it'll start, it'll push, but half your panels will be empty.
+> - **Auth.** If your Prometheus needs auth, add `-e PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN=...` (or the basic-auth pair). See [Configuration](#configuration).
+
 ## Configuration
 
 Every knob is an env var. Required:
