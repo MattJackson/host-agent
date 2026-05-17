@@ -14,12 +14,15 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/pq/docker-server/host-agent/internal/adaptive"
 	"github.com/pq/docker-server/host-agent/internal/config"
 	"github.com/pq/docker-server/host-agent/internal/controller"
+	"github.com/pq/docker-server/host-agent/internal/envelope"
 	"github.com/pq/docker-server/host-agent/internal/ipmi"
 	"github.com/pq/docker-server/host-agent/internal/runner"
 	"github.com/pq/docker-server/host-agent/internal/sensors"
@@ -56,27 +59,11 @@ func main() {
 	r := runner.NewExec()
 	ipmiClient := ipmi.New(r)
 
-	// 1. Vendor guard — refuse to start on non-Dell BMCs.
-	vendor, err := ipmiClient.Vendor(ctx)
-	if err != nil {
-		logger.Printf("FATAL: ipmitool mc info returned no Manufacturer Name. Is /dev/ipmi0 mapped in?")
-		os.Exit(1)
-	}
-	if vendor == "" {
-		logger.Printf("FATAL: ipmitool mc info returned no Manufacturer Name. Is /dev/ipmi0 mapped in?")
-		os.Exit(1)
-	}
-	if !strings.Contains(vendor, "Dell") {
-		logger.Printf("FATAL: not a Dell BMC (%s). Refusing to issue Dell raw fan commands.", vendor)
-		os.Exit(1)
-	}
-	logger.Printf("Vendor: %s", vendor)
-
-	// 2. Detect chassis model.
+	// 1. Detect chassis model.
 	model := detectModel()
 	logger.Printf("Detected model: %s", model)
 
-	// 3. Load profile (env > model > default).
+	// 2. Load profile (env > model > default).
 	cfg, err := config.Load(profileDir, model, os.LookupEnv, logger)
 	if err != nil {
 		logger.Printf("FATAL: profile load: %v", err)
@@ -92,7 +79,25 @@ func main() {
 	} else {
 		logger.Printf("HOST_AGENT_MODE unset; using v1 profile values + %s defaults for any unset class", m)
 	}
-	logActiveProfile(logger, cfg)
+
+	// 2b: Build adaptive observer.
+	obs := buildObserver(logger, cfg)
+
+	// 3. Vendor guard — refuse to start on non-Dell BMCs.
+	vendor, err := ipmiClient.Vendor(ctx)
+	if err != nil {
+		logger.Printf("FATAL: ipmitool mc info returned no Manufacturer Name. Is /dev/ipmi0 mapped in?")
+		os.Exit(1)
+	}
+	if vendor == "" {
+		logger.Printf("FATAL: ipmitool mc info returned no Manufacturer Name. Is /dev/ipmi0 mapped in?")
+		os.Exit(1)
+	}
+	if !strings.Contains(vendor, "Dell") {
+		logger.Printf("FATAL: not a Dell BMC (%s). Refusing to issue Dell raw fan commands.", vendor)
+		os.Exit(1)
+	}
+	logger.Printf("Vendor: %s", vendor)
 
 	// 4. Probe GPU + HDD.
 	gpu := sensors.NewGPU(r)
@@ -136,6 +141,7 @@ func main() {
 
 	// First cycle runs immediately (don't wait for the first tick).
 	runCycle(ctx, c)
+	sampleObserver(obs, c)
 
 	for {
 		select {
@@ -150,6 +156,7 @@ func main() {
 			return
 		case <-ticker.C:
 			runCycle(ctx, c)
+			sampleObserver(obs, c)
 		}
 	}
 }
@@ -209,6 +216,56 @@ func logActiveProfile(l controller.Logger, cfg *config.Config) {
 		cfg.MinFan, cfg.MaxFan,
 		cfg.FanGain, cfg.DerivativeGain,
 		cfg.DeadbandDriftRate, cfg.IntervalSec, cfg.AdaptAlpha)
+}
+
+// v2: build observer for adaptive controller. Phase 2 of the v2
+// rollout — this is READ-ONLY in this phase (no decisions are made
+// from the observed stats; that's T12+). Window size derives from
+// OBSERVER_WINDOW_MINUTES (default 120) × 60 / cfg.IntervalSec.
+//
+// Inlet temp is not yet plumbed through internal/sensors.Reading;
+// we pass 0 for InletCelsius until a later task adds it. The
+// inlet-jump reset feature is therefore a no-op in Phase 2.
+func buildObserver(logger controller.Logger, cfg *config.Config) *adaptive.Observer {
+	windowMinutes := 120
+	if v := os.Getenv("OBSERVER_WINDOW_MINUTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			windowMinutes = n
+		}
+	}
+	intervalSec := cfg.IntervalSec
+	if intervalSec <= 0 {
+		intervalSec = 15
+	}
+	windowSize := windowMinutes * 60 / intervalSec
+	obs := adaptive.NewObserver(windowSize, 10) // inletJumpC=10
+	logger.Printf("adaptive observer: window=%dmin (%d samples @ %ds intervals)", windowMinutes, windowSize, intervalSec)
+	return obs
+}
+
+// sampleObserver pushes one Sample per managed class to the observer,
+// reading the most-recent per-class temps from the controller's
+// Last*Temp fields. Called after each PID cycle.
+//
+// Classes with no current reading (Last*Temp == -1) are skipped so the
+// observer's discard logic doesn't have to handle the sentinel.
+func sampleObserver(obs *adaptive.Observer, c *controller.Controller) {
+	now := time.Now()
+	push := func(class envelope.Class, temp int) {
+		if temp < 0 {
+			return
+		}
+		obs.Add(class, adaptive.Sample{
+			Timestamp:    now,
+			TempCelsius:  float64(temp),
+			FanDemandPct: c.CurrentSpeed,
+			InletCelsius: 0, // TODO: plumb real inlet from sensors.Reading
+		})
+	}
+	push(envelope.CPU, c.LastCPUTemp)
+	push(envelope.PassiveGPU, c.LastPGTemp)
+	push(envelope.HDD, c.LastHDDTemp)
+	push(envelope.SSD, c.LastSSDTemp)
 }
 
 // compositeReader aggregates CPU + GPU + smartctl into a single Reading.
