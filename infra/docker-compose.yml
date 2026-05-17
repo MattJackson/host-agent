@@ -29,6 +29,15 @@ services:
     # need host PID visibility. Sub-services that ask for it (cadvisor)
     # have their own access via the docker socket.
     runtime: ${HOST_AGENT_RUNTIME:-runc}
+    # env_file: pass every variable in infra/.env through to the container.
+    # This lets operators tune fan-controller settings (GPU_TARGET,
+    # CPU_TARGET, HDD_TARGET, etc. — see host-agent/profiles/default.env)
+    # without having to enumerate each knob in the `environment:` block
+    # below. The explicit `environment:` entries take precedence for
+    # the ones we mandate (NVIDIA_*, PROMETHEUS_REMOTE_WRITE_*).
+    env_file:
+      - path: .env
+        required: false
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=utility
