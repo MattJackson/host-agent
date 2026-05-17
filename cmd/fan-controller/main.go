@@ -21,6 +21,7 @@ import (
 	"github.com/pq/docker-server/host-agent/internal/config"
 	"github.com/pq/docker-server/host-agent/internal/controller"
 	"github.com/pq/docker-server/host-agent/internal/ipmi"
+	"github.com/pq/docker-server/host-agent/internal/mode"
 	"github.com/pq/docker-server/host-agent/internal/runner"
 	"github.com/pq/docker-server/host-agent/internal/sensors"
 )
@@ -56,6 +57,13 @@ func main() {
 	r := runner.NewExec()
 	ipmiClient := ipmi.New(r)
 
+	// Early HOST_AGENT_MODE parse for pre-vendor logging.
+	if m, set, err := mode.Parse(); set && err == nil {
+		logger.Printf("HOST_AGENT_MODE=%s", m)
+	} else if set && err != nil {
+		logger.Printf("WARN: invalid HOST_AGENT_MODE=%q (falling back to %s)", os.Getenv("HOST_AGENT_MODE"), mode.Default)
+	}
+
 	// 1. Vendor guard — refuse to start on non-Dell BMCs.
 	vendor, err := ipmiClient.Vendor(ctx)
 	if err != nil {
@@ -81,6 +89,16 @@ func main() {
 	if err != nil {
 		logger.Printf("FATAL: profile load: %v", err)
 		os.Exit(1)
+	}
+	logActiveProfile(logger, cfg)
+
+	m, modeSet, modeErr := config.ApplyMode(cfg)
+	if modeErr != nil {
+		logger.Printf("WARN: %v (falling back to %s)", modeErr, m)
+	} else if modeSet {
+		logger.Printf("HOST_AGENT_MODE=%s (explicit)", m)
+	} else {
+		logger.Printf("HOST_AGENT_MODE unset; using v1 profile values + %s defaults for any unset class", m)
 	}
 	logActiveProfile(logger, cfg)
 
