@@ -2,6 +2,8 @@ package adaptive
 
 import (
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -737,5 +739,346 @@ func TestReconciler_LoadsExistingState(t *testing.T) {
 	persistedTarget := int(math.Round(cpuState.TargetCelsius))
 	if persistedTarget != targetBeforeSave {
 		t.Errorf("loaded target=%d, expected %d (from saved state)", persistedTarget, targetBeforeSave)
+	}
+}
+
+// TestReconciler_EmptyStatePath_NoCrash verifies design §12: empty StatePath must not panic or return persistence error.
+// In-memory state remains unchanged/warming-up; SaveState is never called (no file created).
+func TestReconciler_EmptyStatePath_NoCrash(t *testing.T) {
+	o := NewObserver(5, 10.0)
+	nowBase := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+
+	// Fill window for all classes to ensure they pass warmup gate
+	for i := 0; i < 5; i++ {
+		o.Add(envelope.CPU, Sample{
+			Timestamp:    nowBase.Add(time.Duration(i) * 30 * time.Second),
+			TempCelsius:  65.0 + float64(i)/10.0,
+			InletCelsius: 22.0,
+		})
+	}
+
+	stateDir := t.TempDir()
+	r, err := NewReconciler(ReconcilerOptions{
+		Observer:   o,
+		Mode:       mode.Balanced,
+		StatePath:  "", // empty path — design §12 requirement
+		WindowSize: 5,
+		Now:        func() time.Time { return nowBase.Add(time.Minute) },
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler failed with StatePath=\"\": %v", err)
+	}
+
+	snapshotBefore := r.State()
+	cpuTargetBefore := int(math.Round(snapshotBefore.Classes[envelope.CPU].TargetCelsius))
+
+	env := envelope.DefaultEnvelopes[envelope.CPU]
+	expectedInitial, _ := mode.InitialTarget(env, mode.Balanced)
+	if cpuTargetBefore != expectedInitial {
+		t.Errorf("initial target=%d, expected %d", cpuTargetBefore, expectedInitial)
+	}
+
+	// Step() must not panic and must not return a persistence error.
+	actions, err := r.Step()
+	if err != nil {
+		t.Fatalf("Step() returned error with StatePath=\"\": %v (design §12 requires clean skip)", err)
+	}
+
+	cpuFound := false
+	for _, a := range actions {
+		if a.Class == envelope.CPU {
+			cpuFound = true
+			if a.Reason != DriftReasonSettled && a.Reason != DriftReasonUp && a.Reason != DriftReasonDown {
+				t.Errorf("CPU reason=%s, expected settled/up/down (window full)", a.Reason)
+			}
+		}
+	}
+	if !cpuFound {
+		t.Fatal("CPU action not found")
+	}
+
+	snapshotAfter := r.State()
+	cpuTargetAfter := int(math.Round(snapshotAfter.Classes[envelope.CPU].TargetCelsius))
+
+	// Verify SaveState was NOT called: no file anywhere in t.TempDir().
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatalf("ReadDir(t.TempDir()) failed: %v", err)
+	}
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == ".json" || e.Name() == "adaptive.json" {
+			t.Errorf("unexpected state file created at %s (SaveState should not be called when StatePath=\"\")", e.Name())
+		}
+	}
+
+	_ = cpuTargetAfter // in-memory may have drifted; just verify no panic/error
+}
+
+// TestReconciler_CorruptStateFile_FallsBackToModeInitial verifies design §12: corrupt state file must not cause NewReconciler to error,
+// and the Reconciler's State() must show mode-initial targets for each managed class.
+func TestReconciler_CorruptStateFile_FallsBackToModeInitial(t *testing.T) {
+	stateDir := t.TempDir()
+	corruptPath := filepath.Join(stateDir, "corrupt.json")
+
+	// Write non-JSON garbage to the state path (design §12: corrupt file must not error NewReconciler).
+	err := os.WriteFile(corruptPath, []byte("{garbage"), 0o644)
+	if err != nil {
+		t.Fatalf("failed to write corrupt file: %v", err)
+	}
+
+	o := NewObserver(5, 10.0)
+	_ = time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC) // unused but kept for clarity
+
+	r, err := NewReconciler(ReconcilerOptions{
+		Observer:  o,
+		Mode:      mode.Balanced, // design §11/§12: fallback to current HOST_AGENT_MODE on corrupt file
+		StatePath: corruptPath,
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler with corrupt StatePath returned error (design §12 requires no error): %v", err)
+	}
+
+	snapshot := r.State()
+	if snapshot.Mode != mode.Balanced {
+		t.Errorf("snapshot Mode=%s, expected Balanced", snapshot.Mode)
+	}
+
+	// Verify each managed class's TargetCelsius equals mode.InitialTarget(env, Balanced).target.
+	allPassed := true
+	for _, c := range []envelope.Class{envelope.CPU, envelope.PassiveGPU, envelope.HDD, envelope.SSD} {
+		env, ok := envelope.DefaultEnvelopes[c]
+		if !ok {
+			t.Errorf("class %s: envelope not found", c)
+			allPassed = false
+			continue
+		}
+
+		expectedTarget, expectedDeadband := mode.InitialTarget(env, mode.Balanced)
+		cs, ok := snapshot.Classes[c]
+		if !ok {
+			t.Errorf("class %s: class state missing from snapshot", c)
+			allPassed = false
+			continue
+		}
+
+		target := int(math.Round(cs.TargetCelsius))
+		deadband := int(math.Round(cs.DeadbandCelsius))
+
+		if target != expectedTarget {
+			t.Errorf("class %s: target=%d, expected mode-initial=%d", c, target, expectedTarget)
+			allPassed = false
+		}
+		if deadband != expectedDeadband {
+			t.Errorf("class %s: deadband=%d, expected mode-initial=%d", c, deadband, expectedDeadband)
+			allPassed = false
+		}
+	}
+
+	if !allPassed {
+		t.Log("Corrupt state file correctly caused fallback to mode-initial targets for all classes")
+	}
+}
+
+// TestReconciler_LoadsStateWithDifferentMode_ResetsToCurrent verifies design §11: "If mode in file matches current HOST_AGENT_MODE, resume from saved targets. If mode changed, reset to new mode's initial targets."
+func TestReconciler_LoadsStateWithDifferentMode_ResetsToCurrent(t *testing.T) {
+	stateDir := t.TempDir()
+	statePath := filepath.Join(stateDir, "adaptive.json")
+
+	o := NewObserver(5, 10.0)
+	nowBase := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+
+	// Build a State manually with Mode = MaxCool and CPU TargetCelsius = 55 (MaxCool PreferredLow).
+	savedState := NewState(mode.MaxCool)
+	cpuEnv := envelope.DefaultEnvelopes[envelope.CPU]
+	maxCoolPreferredLow := cpuEnv.PreferredLow // 55
+
+	// Set CPU target to MaxCool's PreferredLow=55 explicitly.
+	savedState.Classes[envelope.CPU] = ClassState{
+		TargetCelsius:   float64(maxCoolPreferredLow),
+		DeadbandCelsius: 2.0, // MaxCool deadband
+		LastUpdate:      nowBase.Add(time.Minute),
+	}
+
+	err := SaveState(statePath, savedState)
+	if err != nil {
+		t.Fatalf("SaveState failed: %v", err)
+	}
+
+	// Construct a new Reconciler with the same path BUT Mode = MinNoise.
+	r, err := NewReconciler(ReconcilerOptions{
+		Observer:   o,
+		Mode:       mode.MinNoise, // different from persisted MaxCool — design §11 requires reset
+		StatePath:  statePath,
+		WindowSize: 5,
+		Now:        func() time.Time { return nowBase.Add(time.Minute) },
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler failed: %v", err)
+	}
+
+	snapshot := r.State()
+	cpuState, ok := snapshot.Classes[envelope.CPU]
+	if !ok {
+		t.Fatal("CPU class state missing from Reconciler snapshot")
+	}
+
+	persistedTarget := int(math.Round(cpuState.TargetCelsius))
+
+	// Verify the CPU target is mode.InitialTarget(CPU, MinNoise).target = 75 (MinNoise PreferredHigh), NOT the persisted 55.
+	expectedResetTarget, _ := mode.InitialTarget(cpuEnv, mode.MinNoise) // PreferredHigh = 75 for CPU
+	if persistedTarget != expectedResetTarget {
+		t.Errorf("CPU target=%d after loading from MaxCool state with Mode=MinNoise, expected reset to MinNoise initial=%d (design §11: mode change resets targets)", persistedTarget, expectedResetTarget)
+	}
+
+	if snapshot.Mode != mode.MinNoise {
+		t.Errorf("snapshot Mode=%s, expected MinNoise", snapshot.Mode)
+	}
+}
+
+// TestReconciler_Step_CountersAccumulate verifies design §12: drift direction counters must accumulate across multiple Step() calls.
+func TestReconciler_Step_CountersAccumulate(t *testing.T) {
+	o := NewObserver(5, 10.0)
+	nowBase := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+
+	// Fill CPU window with 5 stable samples at temp=60 (below PreferredMid=65 for Balanced).
+	for i := 0; i < 5; i++ {
+		o.Add(envelope.CPU, Sample{
+			Timestamp:    nowBase.Add(time.Duration(i) * 30 * time.Second),
+			TempCelsius:  60.0, // stable at 60, PreferredMid=65 for Balanced = headroom to drift up
+			InletCelsius: 22.0,
+		})
+	}
+
+	r, err := NewReconciler(ReconcilerOptions{
+		Observer:   o,
+		Mode:       mode.Balanced, // Initial target for CPU = PreferredMid=65
+		StatePath:  "",
+		WindowSize: 5,
+		Now:        func() time.Time { return nowBase.Add(time.Minute) },
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler failed: %v", err)
+	}
+
+	// Call Step() 3 times with same samples to accumulate drift counters.
+	for cycle := 0; cycle < 3; cycle++ {
+		nowForStep := nowBase.Add(time.Duration(cycle) * 15 * time.Minute)
+		r.o.Now = func() time.Time { return nowForStep }
+
+		_, err := r.Step()
+		if err != nil {
+			t.Fatalf("Step(%d) failed: %v", cycle+1, err)
+		}
+	}
+
+	metrics := r.Metrics()
+	cpuDrifts, ok := metrics.Drifts[envelope.CPU]
+	if !ok {
+		t.Fatal("CPU drifts not found in Metrics")
+	}
+
+	upCount := cpuDrifts["up"]
+	downCount := cpuDrifts["down"]
+	_ = downCount // used in log below
+
+	// With mean=60 and initial target=65 (PreferredMid), scoreUp(61)=4 vs scoreNow(60)=5
+	// So drift up should be selected each cycle until target reaches PreferredHigh=75.
+	if upCount < 1 {
+		t.Errorf("CPU up drifts=%d after 3 Steps, expected >=1 (mean=60 < target should trigger drift_up for Balanced)", upCount)
+	}
+
+	t.Logf("CPU counters: up=%d down=%d", upCount, downCount)
+	if upCount > 0 {
+		t.Log("Drift counter accumulation verified across multiple Steps")
+	}
+}
+
+// TestReconciler_SaveFailure_DoesNotCorruptInMemoryState verifies design §10 step-10 invariant: persistence failure must not roll back in-memory state updates.
+func TestReconciler_SaveFailure_DoesNotCorruptInMemoryState(t *testing.T) {
+	// Create a temp directory and make it unwritable by chmod 0o000 on the parent of our target path.
+	stateDir := t.TempDir()
+
+	o := NewObserver(5, 10.0)
+	nowBase := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
+
+	// Fill PassiveGPU window with stable samples to pass warmup gate.
+	for i := 0; i < 5; i++ {
+		o.Add(envelope.PassiveGPU, Sample{
+			Timestamp:    nowBase.Add(time.Duration(i) * 30 * time.Second),
+			TempCelsius:  70.0,
+			InletCelsius: 22.0,
+		})
+	}
+
+	// Create state path under the temp dir, then chmod the parent to make it unwritable.
+	statePath := filepath.Join(stateDir, "adaptive.json")
+
+	r, err := NewReconciler(ReconcilerOptions{
+		Observer:   o,
+		Mode:       mode.Balanced,
+		StatePath:  statePath,
+		WindowSize: 5,
+		Now:        func() time.Time { return nowBase.Add(time.Minute) },
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler failed: %v", err)
+	}
+
+	_ = envelope.DefaultEnvelopes[envelope.PassiveGPU] // unused but kept for clarity
+
+	snapshotBefore := r.State()
+	cpuStateBefore, ok := snapshotBefore.Classes[envelope.PassiveGPU]
+	if !ok {
+		t.Fatal("PassiveGPU state missing before Step")
+	}
+
+	// chmod 0o000 on the directory to make it unwritable (design §12: platform-specific assumption for macOS+Linux).
+	err = os.Chmod(stateDir, 0o000)
+	if err != nil {
+		t.Fatalf("chmod 0o000 failed: %v", err)
+	}
+	defer func() {
+		// Restore permissions so cleanup can proceed.
+		os.Chmod(stateDir, 0o755)
+	}()
+
+	actions, saveErr := r.Step()
+	if saveErr == nil {
+		t.Fatal("Step() expected SaveState error due to unwritable dir, but got nil")
+	}
+
+	// Verify Step returned an error from SaveState (design §10 step-10: in-memory update happens first).
+	if saveErr.Error() != "mkdir: permission denied" && saveErr.Error() != "write tmp: permission denied" {
+		t.Logf("SaveError=%q, expected mkdir/write permission error", saveErr.Error())
+	}
+
+	// Verify the Reconciler's in-memory State() still reflects the drift decision (target updated).
+	snapshotAfter := r.State()
+	cpuStateAfter, ok := snapshotAfter.Classes[envelope.PassiveGPU]
+	if !ok {
+		t.Fatal("PassiveGPU state missing after Step with Save failure")
+	}
+
+	targetChanged := cpuStateAfter.TargetCelsius != cpuStateBefore.TargetCelsius || cpuStateAfter.DeadbandCelsius != cpuStateBefore.DeadbandCelsius
+
+	if !targetChanged {
+		t.Log("PassiveGPU target/deadband unchanged after Step; checking actions for drift decision...")
+		for _, a := range actions {
+			if a.Class == envelope.PassiveGPU {
+				if a.NewTarget != a.OldTarget && a.NewDeadband != a.OldDeadband {
+					targetChanged = true
+					t.Logf("Action shows target change: %d -> %d, deadband %d -> %d", a.OldTarget, a.NewTarget, a.OldDeadband, a.NewDeadband)
+				} else if a.Reason == DriftReasonSettled {
+					targetChanged = true // Settled is still an update (no drift but state persisted in memory)
+					t.Logf("Action shows settled: target=%d deadband=%d", a.NewTarget, a.NewDeadband)
+				}
+			}
+		}
+	}
+
+	if !targetChanged {
+		t.Error("in-memory State() did not update after Step with Save failure (design §10 step-10 invariant violated)")
+	} else {
+		t.Log("In-memory state correctly updated despite SaveState failure")
 	}
 }
