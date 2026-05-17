@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -84,6 +85,80 @@ func main() {
 
 	// 2b: Build adaptive observer.
 	obs := buildObserver(logger, cfg)
+
+	// 2c: Read env vars for reconciler config.
+	var adaptiveCycleMin int = 10
+	if v := os.Getenv("ADAPTIVE_CYCLE_MINUTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			adaptiveCycleMin = n
+		}
+	}
+	adaptiveDisabled := strings.EqualFold(os.Getenv("HOST_AGENT_ADAPTIVE_DISABLED"), "true") ||
+		os.Getenv("HOST_AGENT_ADAPTIVE_DISABLED") == "1" ||
+		strings.EqualFold(os.Getenv("HOST_AGENT_ADAPTIVE_DISABLED"), "yes")
+
+	statePath := adaptive.DefaultStatePath
+	if sp := os.Getenv("HOST_AGENT_ADAPTIVE_STATE_PATH"); sp != "" {
+		statePath = sp
+	}
+
+	windowMinutes := 120
+	if v := os.Getenv("OBSERVER_WINDOW_MINUTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			windowMinutes = n
+		}
+	}
+	intervalSec := cfg.IntervalSec
+	if intervalSec <= 0 {
+		intervalSec = 15
+	}
+	windowSize := windowMinutes * 60 / intervalSec
+
+	var perClassOverrides map[envelope.Class]bool
+	if !adaptiveDisabled && len(cfg.Raw) > 0 {
+		perClassOverrides = make(map[envelope.Class]bool)
+		if _, ok := cfg.Raw["CPU_TARGET"]; ok {
+			perClassOverrides[envelope.CPU] = true
+		}
+		if _, ok := cfg.Raw["GPU_TARGET"]; ok {
+			perClassOverrides[envelope.PassiveGPU] = true
+		}
+		if _, ok := cfg.Raw["HDD_TARGET"]; ok {
+			perClassOverrides[envelope.HDD] = true
+		}
+		if _, ok := cfg.Raw["SSD_TARGET"]; ok {
+			perClassOverrides[envelope.SSD] = true
+		}
+	}
+
+	overrideClasses := make([]string, 0, len(perClassOverrides))
+	for c := range perClassOverrides {
+		overrideClasses = append(overrideClasses, string(c))
+	}
+	slices.Sort(overrideClasses)
+
+	var recon *adaptive.Reconciler
+	if !adaptiveDisabled {
+		recon, err = adaptive.NewReconciler(adaptive.ReconcilerOptions{
+			Observer:          obs,
+			Mode:              m,
+			StatePath:         statePath,
+			WindowSize:        windowSize,
+			PerClassOverrides: perClassOverrides,
+		})
+		if err != nil {
+			logger.Printf("WARN: failed to build reconciler: %v (adaptive disabled)", err)
+			adaptiveDisabled = true
+		} else {
+			logger.Printf("adaptive reconciler: dry-run, cycle=%dmin, state=%s, overrides=%v", adaptiveCycleMin, statePath, overrideClasses)
+		}
+	}
+
+	if adaptiveDisabled {
+		logger.Printf("adaptive reconciler: disabled by HOST_AGENT_ADAPTIVE_DISABLED")
+	} else {
+		go runAdaptiveLoop(ctx, logger, recon, time.NewTicker(time.Duration(adaptiveCycleMin)*time.Minute))
+	}
 
 	// 3. Vendor guard — refuse to start on non-Dell BMCs.
 	vendor, err := ipmiClient.Vendor(ctx)
@@ -316,4 +391,33 @@ func (osFS) ReadFile(name string) ([]byte, error) {
 
 func (osFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	return os.ReadDir(filepath.Clean("/" + name))
+}
+
+// runAdaptiveLoop drives the slow intent-layer reconcile pass. Fires
+// every ADAPTIVE_CYCLE_MINUTES. DRY-RUN in v0.2.2 — logs decisions
+// and persists state, but does NOT mutate the live cfg's per-class
+// targets. Active drift lands in v0.3.0.
+//
+// Exits when ctx is cancelled.
+func runAdaptiveLoop(ctx context.Context, logger controller.Logger, r *adaptive.Reconciler, t *time.Ticker) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			_ = now
+			actions, err := r.Step()
+			if err != nil {
+				logger.Printf("WARN: adaptive: state persist failed: %v", err)
+			}
+			for _, a := range actions {
+				if a.Reason == adaptive.DriftReasonSettled || a.Reason == adaptive.DriftReasonWarmup || a.Reason == adaptive.DriftReasonSkipped {
+					continue
+				}
+				logger.Printf("adaptive[dry-run]: class=%s reason=%s target %d->%d deadband %d->%d (mean=%.1f stddev=%.2f n=%d)",
+					a.Class, a.Reason, a.OldTarget, a.NewTarget, a.OldDeadband, a.NewDeadband,
+					a.TempMean, a.TempStdDev, a.SamplesUsed)
+			}
+		}
+	}
 }
