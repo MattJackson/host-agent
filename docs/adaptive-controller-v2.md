@@ -298,35 +298,42 @@ func InitialTarget(env Envelope, mode Mode) (target, deadband int) {
 }
 ```
 
-### Mode → optimization criterion
+### Mode → scoring criterion
 
-When the adaptive layer evaluates "should I drift the target?", it uses a mode-specific scoring function over the observation window. Lower-is-better, summed across classes.
+When the adaptive layer evaluates "should I drift the target?", it uses a mode-specific scoring function over the observation window. Lower-is-better.
+
+**All four scoring functions are satisficing over the envelope's preferred band**, not optimizing toward a single point. Inside `[PreferredLow, PreferredHigh]` the band-violation term is zero; outside it grows linearly with distance. This is the key v0.3.2 fix — earlier versions used `balanced = |mean − PreferredMid|`, which would drift target away from observed mean even when temps were comfortably in-band, pushing the PID into saturation for no thermal benefit (see CHANGELOG v0.3.2 for the incident).
 
 #### `max-cool`
 ```
-score = mean(temp) + 0.5 * variance(temp)
+score = max(0, mean − PreferredLow) + 0.5 * variance
 ```
-"Aim for lowest mean temp; tolerate moderate variance."
+"Aim toward PreferredLow; tolerate variance. Below PreferredLow the box is already as cool as we want — settle."
 
 #### `balanced`
 ```
-score = |mean(temp) - PreferredMid| + 0.3 * variance(temp) + 0.3 * fan_change_rate
+score = bandDistance(mean, PreferredLow, PreferredHigh)
+      + 0.3 * variance
+      + 0.3 * fan_change_rate
 ```
-"Stay near preferred-mid; mildly penalize variance and fan twitchiness."
+"Any temp inside the preferred band is equally good. Penalize anything outside, plus mild penalty for variance and fan twitchiness."
 
 #### `min-noise`
 ```
-score = max(0, PreferredHigh - mean(temp)) + 2.0 * fan_change_rate + 0.5 * variance(temp)
+score = max(0, PreferredHigh − mean)            (lean up to ceiling)
+      + 5.0 * max(0, mean − PreferredHigh)      (hard cap at PreferredHigh)
+      + 2.0 * fan_change_rate
+      + 0.5 * variance
 ```
-"Push toward PreferredHigh (closer to top of preferred range = quieter); heavily penalize fan changes."
+"Push toward PreferredHigh (warmer = quieter); never cross above it; heavily penalize fan changes."
 
 #### `eco`
 ```
-score = estimated_total_watts(temp_distribution, fan_change_rate)
+score = scoreMinNoise(env, stats)   // aliased
 ```
-"Minimize total joules: component idle + fan power."
+Currently identical to `min-noise`. Eventually: replace with `estimated_total_watts(temp_distribution, fan_change_rate)` once a per-chassis fan-power model exists. Tracked as a v0.4 item.
 
-The `estimated_total_watts` function is the trickiest — requires a fan-power model (RPM → watts) per chassis. Initial implementation: rough lookup table by `model + fan_rpm_band`. Refined over time.
+The `variance` and `fan_change_rate` terms cancel out in the reconciler's projection comparison (the synth only adjusts `TempMean` ±1, leaving variance/rate unchanged across the three scenarios). They serve only to (a) differentiate modes in `adaptive_mode_preview_score`, and (b) reserve the architectural slot for a future score-synthesizer that models PID response.
 
 ### Drift direction from observation
 

@@ -6,6 +6,47 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-05-17
+
+### Fixed — adaptive score functions are now satisficing, not optimizing
+
+**Incident**: ~4 hours after the v0.3.1 fleet deploy, a host went from a quiet ~25% chassis-fan setpoint to **100%** with no thermal cause. HDDs were at 37°C — 13°C below MaxSafe — and the box was screaming.
+
+**Root cause**: `scoreBalanced` was a deviation-from-`PreferredMid` optimizer:
+```
+score = |mean(temp) − PreferredMid| + 0.3*variance + 0.3*fan_change_rate
+```
+The reconciler scores three projected futures (now / target+1 / target−1) by adjusting *only* `TempMean` in the synthetic stats. `variance` and `fan_change_rate` were copied unchanged into all three → those terms cancel in the comparison. Net effect: `balanced` was a pure deviation minimizer with no signal for the cost of cooling. When observed HDD mean sat at 40°C against `PreferredMid=38`, the reconciler kept picking "drift target down" cycle after cycle (38→37→36). The PID, seeing a widening positive error, did exactly what an incremental PID does — added `error × FanGain` to the setpoint every cycle until fans saturated.
+
+The drives sat at a perfectly fine 37°C while the box wasted electricity and noise satisfying a fictional emergency the adaptive layer had invented.
+
+**Fix**: all four mode score functions are now **satisficing** over the envelope's preferred band rather than **optimizing** toward a single point. Anywhere inside `[PreferredLow, PreferredHigh]` scores zero on the band-violation term; outside it grows linearly with distance. New formulas in `mode/mode.go`:
+
+| mode | new formula |
+|---|---|
+| `max-cool` | `max(0, mean − PreferredLow) + 0.5*var` |
+| `balanced` | `bandDistance(mean, PreferredLow, PreferredHigh) + 0.3*var + 0.3*rate` |
+| `min-noise` | `max(0, PreferredHigh − mean) + 5*max(0, mean − PreferredHigh) + 2*rate + 0.5*var` |
+| `eco` | alias of `min-noise` (unchanged) |
+
+Under satisficing, that case never happens. HDD at 37-40°C is inside `[32, 43]` → `bandViolation = 0` → all three projections score equally → reconciler picks `bestDelta=0` → target stays put → PID sees no artificial error → fans stay quiet. The PID saturation guardrail proposed during incident triage was not shipped — it's unnecessary once adaptive stops creating saturation conditions in the first place.
+
+The design doc (`adaptive-controller-v2.md` §8) is updated to match.
+
+### Migration
+
+Drop-in image upgrade; no operator-visible config change. However, hosts that drifted target away from `PreferredMid` under v0.3.0/v0.3.1 will keep their drifted targets after upgrade — satisficing leaves in-band targets alone but doesn't actively pull them back. To reset to mode-initial targets:
+
+```
+sudo systemctl stop host-agent || sudo docker stop host-agent-host-agent-1
+sudo rm /var/lib/host-agent/state/adaptive.json
+sudo docker start host-agent-host-agent-1 || sudo systemctl start host-agent
+```
+
+The observer window (`observer.json`) does NOT need to be cleared — it's mode-agnostic.
+
+The `adaptive_mode_preview_score` metric will show different numeric shapes (especially `min-noise`, which now penalizes crossing above `PreferredHigh`). The "lower = better fit" semantics are unchanged; only the magnitude of the numbers differs.
+
 ## [0.3.1] — 2026-05-17
 
 ### Added — mode preview metrics

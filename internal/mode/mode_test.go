@@ -169,13 +169,17 @@ func floatNear(a, b, eps float64) bool {
 }
 
 func TestScore_MaxCool_Formula(t *testing.T) {
+	// PassiveGPU: PreferredLow=65, PreferredHigh=80.
+	// score = max(0, mean - PreferredLow) + 0.5*variance.
 	tests := []struct {
 		stats WindowStats
 		want  float64
 	}{
-		{WindowStats{TempMean: 70, TempStdDev: 0}, 70.0},
-		{WindowStats{TempMean: 70, TempStdDev: 2}, 72.0},
-		{WindowStats{TempMean: 60, TempStdDev: 3}, 64.5},
+		{WindowStats{TempMean: 70, TempStdDev: 0}, 5.0},  // 5 above PreferredLow
+		{WindowStats{TempMean: 70, TempStdDev: 2}, 7.0},  // 5 + 0.5*4
+		{WindowStats{TempMean: 60, TempStdDev: 3}, 4.5},  // below PreferredLow → 0 + 0.5*9
+		{WindowStats{TempMean: 65, TempStdDev: 0}, 0.0},  // at PreferredLow → ideal
+		{WindowStats{TempMean: 90, TempStdDev: 0}, 25.0}, // 25 above PreferredLow, well past PreferredHigh
 	}
 
 	env := envelope.DefaultEnvelopes[envelope.PassiveGPU]
@@ -192,14 +196,19 @@ func TestScore_MaxCool_Formula(t *testing.T) {
 }
 
 func TestScore_Balanced_Formula(t *testing.T) {
+	// CPU: PreferredLow=55, PreferredHigh=75.
+	// score = bandDistance(mean, 55, 75) + 0.3*variance + 0.3*fanRate.
+	// In-band cases score zero on the bandViolation term.
 	tests := []struct {
 		stats WindowStats
 		want  float64
 	}{
-		{WindowStats{TempMean: 65, TempStdDev: 0, FanChangeRate: 0}, 0.0},
-		{WindowStats{TempMean: 68, TempStdDev: 0, FanChangeRate: 0}, 3.0},
-		{WindowStats{TempMean: 60, TempStdDev: 0, FanChangeRate: 4}, 6.2},
-		{WindowStats{TempMean: 65, TempStdDev: 2, FanChangeRate: 0}, 1.2},
+		{WindowStats{TempMean: 65, TempStdDev: 0, FanChangeRate: 0}, 0.0}, // PreferredMid, in band → 0
+		{WindowStats{TempMean: 68, TempStdDev: 0, FanChangeRate: 0}, 0.0}, // still in band → 0
+		{WindowStats{TempMean: 60, TempStdDev: 0, FanChangeRate: 4}, 1.2}, // in band; only fanRate term
+		{WindowStats{TempMean: 65, TempStdDev: 2, FanChangeRate: 0}, 1.2}, // in band; only variance term
+		{WindowStats{TempMean: 50, TempStdDev: 0, FanChangeRate: 0}, 5.0}, // 5 below PreferredLow
+		{WindowStats{TempMean: 80, TempStdDev: 0, FanChangeRate: 0}, 5.0}, // 5 above PreferredHigh
 	}
 
 	env := envelope.DefaultEnvelopes[envelope.CPU]
@@ -216,14 +225,16 @@ func TestScore_Balanced_Formula(t *testing.T) {
 }
 
 func TestScore_MinNoise_Formula(t *testing.T) {
+	// PassiveGPU: PreferredLow=65, PreferredHigh=80.
+	// score = belowHigh + 5*aboveHigh + 2*fanRate + 0.5*variance.
 	tests := []struct {
 		stats WindowStats
 		want  float64
 	}{
-		{WindowStats{TempMean: 80, TempStdDev: 0, FanChangeRate: 0}, 0.0},
-		{WindowStats{TempMean: 85, TempStdDev: 0, FanChangeRate: 0}, 0.0},
-		{WindowStats{TempMean: 70, TempStdDev: 0, FanChangeRate: 0}, 10.0},
-		{WindowStats{TempMean: 70, TempStdDev: 2, FanChangeRate: 3}, 18.0},
+		{WindowStats{TempMean: 80, TempStdDev: 0, FanChangeRate: 0}, 0.0},  // at PreferredHigh → ideal
+		{WindowStats{TempMean: 85, TempStdDev: 0, FanChangeRate: 0}, 25.0}, // 5 above PreferredHigh → 5*5
+		{WindowStats{TempMean: 70, TempStdDev: 0, FanChangeRate: 0}, 10.0}, // 10 below PreferredHigh
+		{WindowStats{TempMean: 70, TempStdDev: 2, FanChangeRate: 3}, 18.0}, // 10 + 2*3 + 0.5*4
 	}
 
 	env := envelope.DefaultEnvelopes[envelope.PassiveGPU]
@@ -307,21 +318,46 @@ func TestScore_Monotonicity_MaxCool(t *testing.T) {
 	}
 }
 
-func TestScore_Balanced_MinimizedAtPreferredMid(t *testing.T) {
-	env := envelope.DefaultEnvelopes[envelope.HDD] // PreferredMid = 38
+func TestScore_Balanced_FlatInsideBand(t *testing.T) {
+	// HDD: PreferredLow=32, PreferredMid=38, PreferredHigh=43.
+	// Satisficing balanced: every value inside the band scores equally
+	// on the bandViolation term. This is the v0.3.2 fix — previously,
+	// balanced was minimized strictly at PreferredMid, so observed mean
+	// anywhere in the band would drift target away to chase a single
+	// point, pushing the PID into saturation for no thermal benefit.
+	env := envelope.DefaultEnvelopes[envelope.HDD]
 
-	stats35 := WindowStats{TempMean: 35, TempStdDev: 0, FanChangeRate: 0}
-	stats38 := WindowStats{TempMean: 38, TempStdDev: 0, FanChangeRate: 0}
-	stats42 := WindowStats{TempMean: 42, TempStdDev: 0, FanChangeRate: 0}
-
+	zeroRate := WindowStats{TempStdDev: 0, FanChangeRate: 0}
 	scorer := Balanced.Score()
 
-	score35 := scorer(env, stats35)
-	score38 := scorer(env, stats38)
-	score42 := scorer(env, stats42)
+	inBand := []float64{32, 35, 38, 41, 43}
+	for _, t1 := range inBand {
+		s1 := zeroRate
+		s1.TempMean = t1
+		got := scorer(env, s1)
+		if !floatNear(got, 0.0, scoreTestEpsilon) {
+			t.Errorf("mean=%v inside band: score=%v, want 0 (satisficing)", t1, got)
+		}
+	}
 
-	if !(score38 < score35 && score38 < score42) {
-		t.Errorf("balanced should be minimized at PreferredMid: got %v < %v < %v", score38, score35, score42)
+	// Outside the band, the score grows linearly with distance to the
+	// nearest band edge.
+	tests := []struct {
+		mean float64
+		want float64
+	}{
+		{30, 2.0}, // 2 below PreferredLow
+		{45, 2.0}, // 2 above PreferredHigh
+		{25, 7.0}, // 7 below PreferredLow
+		{50, 7.0}, // 7 above PreferredHigh
+	}
+	for _, tt := range tests {
+		s := zeroRate
+		s.TempMean = tt.mean
+		got := scorer(env, s)
+		if !floatNear(got, tt.want, scoreTestEpsilon) {
+			t.Errorf("mean=%v outside band: score=%v, want %v", tt.mean, got, tt.want)
+		}
 	}
 }
 

@@ -936,22 +936,30 @@ func TestReconciler_LoadsStateWithDifferentMode_ResetsToCurrent(t *testing.T) {
 }
 
 // TestReconciler_Step_CountersAccumulate verifies design §12: drift direction counters must accumulate across multiple Step() calls.
+//
+// CPU envelope: PreferredLow=55, PreferredHigh=75. We feed the window
+// with mean=50 — BELOW PreferredLow — so satisficing scoreBalanced
+// returns nonzero bandViolation and the reconciler picks drift_up every
+// cycle until target lifts the synthetic mean back into band. Earlier
+// versions of this test used mean=60 (inside band) and depended on the
+// pre-v0.3.2 deviation-from-PreferredMid optimizer firing drift each
+// cycle even when temps were perfectly safe — exactly the bug v0.3.2
+// fixed.
 func TestReconciler_Step_CountersAccumulate(t *testing.T) {
 	o := NewObserver(5, 10.0)
 	nowBase := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
 
-	// Fill CPU window with 5 stable samples at temp=60 (below PreferredMid=65 for Balanced).
 	for i := 0; i < 5; i++ {
 		o.Add(envelope.CPU, Sample{
 			Timestamp:    nowBase.Add(time.Duration(i) * 30 * time.Second),
-			TempCelsius:  60.0, // stable at 60, PreferredMid=65 for Balanced = headroom to drift up
+			TempCelsius:  50.0, // below PreferredLow=55 — adaptive should drift up
 			InletCelsius: 22.0,
 		})
 	}
 
 	r, err := NewReconciler(ReconcilerOptions{
 		Observer:   o,
-		Mode:       mode.Balanced, // Initial target for CPU = PreferredMid=65
+		Mode:       mode.Balanced,
 		StatePath:  "",
 		WindowSize: 5,
 		Now:        func() time.Time { return nowBase.Add(time.Minute) },
@@ -960,7 +968,6 @@ func TestReconciler_Step_CountersAccumulate(t *testing.T) {
 		t.Fatalf("NewReconciler failed: %v", err)
 	}
 
-	// Call Step() 3 times with same samples to accumulate drift counters.
 	for cycle := 0; cycle < 3; cycle++ {
 		nowForStep := nowBase.Add(time.Duration(cycle) * 15 * time.Minute)
 		r.o.Now = func() time.Time { return nowForStep }
@@ -979,18 +986,12 @@ func TestReconciler_Step_CountersAccumulate(t *testing.T) {
 
 	upCount := cpuDrifts["up"]
 	downCount := cpuDrifts["down"]
-	_ = downCount // used in log below
 
-	// With mean=60 and initial target=65 (PreferredMid), scoreUp(61)=4 vs scoreNow(60)=5
-	// So drift up should be selected each cycle until target reaches PreferredHigh=75.
 	if upCount < 1 {
-		t.Errorf("CPU up drifts=%d after 3 Steps, expected >=1 (mean=60 < target should trigger drift_up for Balanced)", upCount)
+		t.Errorf("CPU up drifts=%d after 3 Steps, expected >=1 (mean=50 below PreferredLow=55 should trigger drift_up)", upCount)
 	}
 
 	t.Logf("CPU counters: up=%d down=%d", upCount, downCount)
-	if upCount > 0 {
-		t.Log("Drift counter accumulation verified across multiple Steps")
-	}
 }
 
 // TestReconciler_SaveFailure_DoesNotCorruptInMemoryState verifies design §10 step-10 invariant: persistence failure must not roll back in-memory state updates.
