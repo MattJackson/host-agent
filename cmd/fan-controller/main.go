@@ -79,6 +79,7 @@ func main() {
 	} else {
 		logger.Printf("HOST_AGENT_MODE unset; using v1 profile values + %s defaults for any unset class", m)
 	}
+	logActiveProfile(logger, cfg)
 
 	// 2b: Build adaptive observer.
 	obs := buildObserver(logger, cfg)
