@@ -6,6 +6,27 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-05-17
+
+### Added — mode preview metrics
+
+Operators can now see what every other mode WOULD do without switching. New metrics emitted on every PID cycle alongside the current state:
+
+- `adaptive_mode_preview_target_celsius{class,mode}` — initial target each mode would set, per class
+- `adaptive_mode_preview_deadband_celsius{class,mode}` — initial deadband each mode would set
+- `adaptive_mode_preview_score{class,mode}` — score of CURRENT observed temp distribution under each mode's intent. Lower = better fit for that mode given current hardware behavior
+
+Two new panels on the Adaptive Controller dashboard:
+
+- **Mode preview** — overlays current drifting target (thick solid) against the 4 modes' initial targets (thin dashed). At-a-glance "if I switched to min-noise right now, the target would jump from X to Y."
+- **Mode fit score** — time-series of each mode's score against current observed stats. A mode whose score is consistently low over days means your hardware naturally behaves the way that mode wants — switching would require less drift work to settle. A high score means switching would force the controller to drift far before equilibrium.
+
+Pure pre-existing math (`envelope.InitialTarget` + `mode.Score`); no new logic, just exposing what the reconciler already computes for other modes.
+
+### Migration
+
+Drop-in. No operator action; just pull `:latest`.
+
 ## [0.3.0] — 2026-05-17
 
 ### BREAKING — host path namespace

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/pq/docker-server/host-agent/internal/envelope"
+	"github.com/pq/docker-server/host-agent/internal/mode"
 )
 
 // classesInRenderOrder is the stable order observer metrics are emitted
@@ -139,7 +140,7 @@ func WriteObserverMetrics(path string, o *Observer) error {
 // adaptive_envelope_max_safe{class} 85
 // adaptive_target_drifts_total{class,direction} 12
 // adaptive_target_resets_total{class,reason} 1
-func RenderReconcilerMetrics(r *Reconciler) []byte {
+func RenderReconcilerMetrics(r *Reconciler, obs *Observer) []byte {
 	var b bytes.Buffer
 
 	metrics := r.Metrics()
@@ -230,6 +231,63 @@ func RenderReconcilerMetrics(r *Reconciler) []byte {
 			}
 		}
 	}
+	fmt.Fprintf(&b, "\n")
+
+	// ── Mode preview metrics ────────────────────────────────────────
+	// For each mode (not just the active one), emit what its initial
+	// target would be per class, and what the CURRENT observed stats
+	// would score under that mode's intent. Lets operators see at a
+	// glance: "what if I switched to min-noise — what would change?"
+	// and "how well does my current hardware behavior fit each mode?"
+	// (Lower score = better fit for that mode's intent.)
+	allModes := []mode.Mode{mode.MaxCool, mode.Balanced, mode.MinNoise, mode.Eco}
+
+	fmt.Fprintf(&b, "# HELP adaptive_mode_preview_target_celsius Initial target temperature this mode would set for this class (independent of current state).\n")
+	fmt.Fprintf(&b, "# TYPE adaptive_mode_preview_target_celsius gauge\n")
+	for _, c := range classesInRenderOrder {
+		cm, ok := metrics.Classes[c]
+		if !ok {
+			continue
+		}
+		for _, m := range allModes {
+			t, _ := mode.InitialTarget(cm.Envelope, m)
+			fmt.Fprintf(&b, "adaptive_mode_preview_target_celsius{class=%q,mode=%q} %d\n", string(c), string(m), t)
+		}
+	}
+	fmt.Fprintf(&b, "\n")
+
+	fmt.Fprintf(&b, "# HELP adaptive_mode_preview_deadband_celsius Initial deadband this mode would set for this class.\n")
+	fmt.Fprintf(&b, "# TYPE adaptive_mode_preview_deadband_celsius gauge\n")
+	for _, c := range classesInRenderOrder {
+		cm, ok := metrics.Classes[c]
+		if !ok {
+			continue
+		}
+		for _, m := range allModes {
+			_, d := mode.InitialTarget(cm.Envelope, m)
+			fmt.Fprintf(&b, "adaptive_mode_preview_deadband_celsius{class=%q,mode=%q} %d\n", string(c), string(m), d)
+		}
+	}
+	fmt.Fprintf(&b, "\n")
+
+	// Score under each mode given CURRENT observed stats. Only emitted
+	// when the observer reference is present (skipped at startup before
+	// observer wiring is complete).
+	if obs != nil {
+		fmt.Fprintf(&b, "# HELP adaptive_mode_preview_score Score of current observed stats under this mode's intent (lower = better fit for that mode given current hardware behavior).\n")
+		fmt.Fprintf(&b, "# TYPE adaptive_mode_preview_score gauge\n")
+		for _, c := range classesInRenderOrder {
+			cm, ok := metrics.Classes[c]
+			if !ok {
+				continue
+			}
+			stats := obs.Stats(c)
+			for _, m := range allModes {
+				score := m.Score()(cm.Envelope, stats)
+				fmt.Fprintf(&b, "adaptive_mode_preview_score{class=%q,mode=%q} %.4f\n", string(c), string(m), score)
+			}
+		}
+	}
 
 	return b.Bytes()
 }
@@ -247,7 +305,7 @@ func WriteAdaptiveMetrics(path string, o *Observer, r *Reconciler) error {
 	buf.Write(RenderObserverMetrics(o))
 	if r != nil {
 		buf.WriteByte('\n')
-		buf.Write(RenderReconcilerMetrics(r))
+		buf.Write(RenderReconcilerMetrics(r, o))
 	}
 
 	tmp := path + ".tmp"

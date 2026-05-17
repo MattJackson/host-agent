@@ -198,7 +198,7 @@ func TestRenderReconcilerMetrics_StableShape(t *testing.T) {
 		t.Fatalf("NewReconciler failed: %v", err)
 	}
 
-	output := RenderReconcilerMetrics(r)
+	output := RenderReconcilerMetrics(r, o)
 	lines := bytes.Split(output, []byte("\n"))
 
 	requiredSeries := map[string]bool{
@@ -328,7 +328,7 @@ func TestRenderReconcilerMetrics_DriftCountersTickOnUp(t *testing.T) {
 		}
 	}
 
-	output := RenderReconcilerMetrics(r)
+	output := RenderReconcilerMetrics(r, o)
 
 	cpuUpLine := "adaptive_target_drifts_total{class=\"cpu\",direction=\"up\"} 1"
 	if !bytes.Contains(output, []byte(cpuUpLine)) {
@@ -384,7 +384,7 @@ func TestRenderReconcilerMetrics_ResetCountersTick(t *testing.T) {
 		}
 	}
 
-	output := RenderReconcilerMetrics(r)
+	output := RenderReconcilerMetrics(r, o)
 
 	cpuResetLine := "adaptive_target_resets_total{class=\"cpu\",reason=\"variance_reset\"} 1"
 	if !bytes.Contains(output, []byte(cpuResetLine)) {
