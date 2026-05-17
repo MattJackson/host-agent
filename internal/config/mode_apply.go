@@ -1,37 +1,46 @@
 package config
 
 import (
+	"os"
+
 	"github.com/pq/docker-server/host-agent/internal/envelope"
 	"github.com/pq/docker-server/host-agent/internal/mode"
 )
 
-// ApplyMode reads HOST_AGENT_MODE and fills any per-class target /
-// deadband that wasn't explicitly set by an env var or profile file.
+// ApplyMode bridges HOST_AGENT_MODE (v2 intent) into the v1-shaped
+// Config struct. Behavior depends on whether the operator opted into
+// v2 by setting HOST_AGENT_MODE:
 //
-// Precedence (highest first):
-//  1. Per-class env var or profile entry (CPU_TARGET=70, etc.)
-//  2. Mode-derived target via envelope.DefaultEnvelopes + mode.InitialTarget
-//  3. Existing zero value (unchanged)
+//   - HOST_AGENT_MODE unset → no-op. cfg keeps whatever Load() resolved
+//     (profile defaults + per-class env-var overrides). This is the
+//     pure v1 path — every host on the prior release lands here.
 //
-// Per-class explicitness is determined by presence of the key in cfg.Raw.
-// If a key is present (any source) we treat it as an explicit override
-// and the mode-derived value is NOT applied for that class.
+//   - HOST_AGENT_MODE set → mode-derived per-class target+deadband
+//     replace cfg's profile-loaded values, EXCEPT for classes where
+//     the operator explicitly set a per-class env var
+//     (CPU_TARGET / GPU_TARGET / HDD_TARGET / SSD_TARGET). Profile
+//     entries DO NOT count as overrides in v2 — they're treated as v1
+//     fallback defaults that yield to mode-derived values. Operators
+//     who want a chassis-specific fixed target set it via env var (or
+//     compose .env), not in the profile file.
 //
-// Returns the resolved mode, whether HOST_AGENT_MODE was explicitly set,
-// and any parse error from mode.Parse. On parse error, the function
-// still applies the fallback (mode.Default = Balanced) so the controller
-// can keep running.
+// Returns the resolved mode, whether HOST_AGENT_MODE was explicitly
+// set, and any parse error from mode.Parse.
 //
-// See design doc §4 + §14 for the user-facing API + migration matrix.
+// See design doc §4 (user-facing API) + §14 (migration matrix).
 func ApplyMode(cfg *Config) (resolved mode.Mode, set bool, err error) {
 	resolved, set, err = mode.Parse()
+	if !set {
+		// v1 behavior — profile-loaded values are authoritative.
+		return resolved, set, err
+	}
 
 	type classBinding struct {
-		targetKey   string
-		deadbandKey string
-		class       envelope.Class
-		target      *int
-		deadband    *int
+		targetEnvKey   string
+		deadbandEnvKey string
+		class          envelope.Class
+		target         *int
+		deadband       *int
 	}
 	bindings := []classBinding{
 		{"CPU_TARGET", "CPU_DEADBAND", envelope.CPU, &cfg.CPUTarget, &cfg.CPUDeadband},
@@ -45,10 +54,13 @@ func ApplyMode(cfg *Config) (resolved mode.Mode, set bool, err error) {
 			continue
 		}
 		t, d := mode.InitialTarget(env, resolved)
-		if _, explicit := cfg.Raw[b.targetKey]; !explicit {
+		// Per-class env-var override wins. Profile-set values are
+		// not overrides in v2 — they're replaced by mode-derived
+		// values when HOST_AGENT_MODE is set.
+		if _, envSet := os.LookupEnv(b.targetEnvKey); !envSet {
 			*b.target = t
 		}
-		if _, explicit := cfg.Raw[b.deadbandKey]; !explicit {
+		if _, envSet := os.LookupEnv(b.deadbandEnvKey); !envSet {
 			*b.deadband = d
 		}
 	}

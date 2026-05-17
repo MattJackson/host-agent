@@ -19,7 +19,9 @@ func writeTempProfile(t *testing.T, contents string) (profileDir string) {
 }
 
 // TestIntegration_Load_NoEnv_NoMode_v1Behavior tests the §14 row
-// "No env vars set → Profile defaults used (v1 behavior)".
+// "No env vars set → Profile defaults used (v1 behavior, ApplyMode noop)".
+// Without HOST_AGENT_MODE set, ApplyMode does NOT inject mode-derived
+// values — cfg keeps exactly what Load() resolved from profiles.
 func TestIntegration_Load_NoEnv_NoMode_v1Behavior(t *testing.T) {
 	profileDir := writeTempProfile(t, `: "${CPU_TARGET:=99}"`)
 
@@ -28,30 +30,24 @@ func TestIntegration_Load_NoEnv_NoMode_v1Behavior(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	resolved, _, _ := ApplyMode(cfg)
+	resolved, set, _ := ApplyMode(cfg)
 
-	if cfg.CPUTarget != 99 {
-		t.Errorf("CPUTarget = %d want 99 (profile sentinel)", cfg.CPUTarget)
+	if set {
+		t.Error("set = true want false (HOST_AGENT_MODE not set)")
 	}
 
 	if resolved != mode.Balanced {
-		t.Errorf("resolved = %v want Balanced", resolved)
+		t.Errorf("resolved = %v want Balanced (default fallback)", resolved)
 	}
 
-	if cfg.CPUDeadband != 3 {
-		t.Errorf("CPUDeadband = %d want 3 (Balanced default)", cfg.CPUDeadband)
+	// CPU was set by profile and stays. Other classes were NOT set by
+	// profile and stay at zero (Go default int). v1 behavior: profile
+	// is authoritative; mode is dormant.
+	if cfg.CPUTarget != 99 {
+		t.Errorf("CPUTarget = %d want 99 (profile)", cfg.CPUTarget)
 	}
-
-	if cfg.GPUTarget != 72 || cfg.GPUDeadband != 3 {
-		t.Errorf("GPU target/deadband = %d/%d want 72/3 (Balanced fallback)", cfg.GPUTarget, cfg.GPUDeadband)
-	}
-
-	if cfg.HDDTarget != 38 || cfg.HDDDeadband != 3 {
-		t.Errorf("HDD target/deadband = %d/%d want 38/3 (Balanced fallback)", cfg.HDDTarget, cfg.HDDDeadband)
-	}
-
-	if cfg.SSDTarget != 50 || cfg.SSDDeadband != 3 {
-		t.Errorf("SSD target/deadband = %d/%d want 50/3 (Balanced fallback)", cfg.SSDTarget, cfg.SSDDeadband)
+	if cfg.GPUTarget != 0 || cfg.HDDTarget != 0 || cfg.SSDTarget != 0 {
+		t.Errorf("GPU/HDD/SSD = %d/%d/%d want all 0 (profile didn't set, mode dormant)", cfg.GPUTarget, cfg.HDDTarget, cfg.SSDTarget)
 	}
 }
 
@@ -138,9 +134,12 @@ func TestIntegration_Load_Mode_Plus_PerClassEnvOverride(t *testing.T) {
 	}
 }
 
-// TestIntegration_Load_Mode_Plus_ProfileOverride tests that profile-set per-class
-// entries count as "explicit override" same as env vars (§14 migration matrix).
-func TestIntegration_Load_Mode_Plus_ProfileOverride(t *testing.T) {
+// TestIntegration_Load_Mode_ReplacesProfileTargets tests that v2 mode
+// EXPLICITLY overrides profile-set per-class targets. Profile values are
+// v1 fallback only — when HOST_AGENT_MODE is set, mode-derived values
+// replace them. Operators wanting a fixed target use an env var, not a
+// profile entry. (§4 + §14 of the design.)
+func TestIntegration_Load_Mode_ReplacesProfileTargets(t *testing.T) {
 	profileDir := writeTempProfile(t, `: "${GPU_TARGET:=80}"`)
 	t.Setenv("HOST_AGENT_MODE", "max-cool")
 
@@ -155,15 +154,16 @@ func TestIntegration_Load_Mode_Plus_ProfileOverride(t *testing.T) {
 		t.Errorf("resolved = %v want MaxCool", resolved)
 	}
 
-	wantGPU := 80
+	// Profile GPU_TARGET=80 yields to mode-derived MaxCool PreferredLow=65.
+	wantGPU := 65
 	if cfg.GPUTarget != wantGPU {
-		t.Errorf("GPUTarget = %d want %d (profile override wins over mode-derived)", cfg.GPUTarget, wantGPU)
+		t.Errorf("GPUTarget = %d want %d (mode-derived, profile yielded)", cfg.GPUTarget, wantGPU)
 	}
 
 	wantCPU := 55
 	wantGPUDeadband := 2
 	if cfg.CPUTarget != wantCPU || cfg.GPUDeadband != wantGPUDeadband {
-		t.Errorf("CPU target = %d (MaxCool), GPU deadband = %d (MaxCool)", cfg.CPUTarget, cfg.GPUDeadband)
+		t.Errorf("CPU target = %d (MaxCool=55), GPU deadband = %d (MaxCool=2)", cfg.CPUTarget, cfg.GPUDeadband)
 	}
 
 	wantHDDTarget := 32
@@ -212,17 +212,25 @@ func TestIntegration_Load_Mode_BadValue_FallsBack(t *testing.T) {
 	}
 }
 
-// TestIntegration_Load_Mode_NoChange_v1Defaults_Preserved tests the §14 row
-// confirming full v1-compatibility: a host that has all four classes explicitly
-// configured in its profile is unaffected by switching to v2.
-func TestIntegration_Load_Mode_NoChange_v1Defaults_Preserved(t *testing.T) {
+// TestIntegration_Load_Mode_EnvVarsWinOverProfile demonstrates the
+// canonical v2 mixing rule: when HOST_AGENT_MODE is set, env-var per-
+// class overrides win; profile entries yield to mode-derived values.
+//
+// This replaces the old "v1 defaults preserved" test — that test's
+// premise (profile entries count as overrides) was the v1.5 prototype
+// behavior, not the shipping v2 design per §4 + §14.
+func TestIntegration_Load_Mode_EnvVarsWinOverProfile(t *testing.T) {
+	// Profile sets all four classes to sentinels (v1-style).
 	profileDir := writeTempProfile(t, `
 : "${CPU_TARGET:=91}"
 : "${GPU_TARGET:=92}"
 : "${HDD_TARGET:=93}"
 : "${SSD_TARGET:=94}"
 `)
+	// Operator opts into v2 + pins CPU and GPU via env var.
 	t.Setenv("HOST_AGENT_MODE", "balanced")
+	t.Setenv("CPU_TARGET", "60")
+	t.Setenv("GPU_TARGET", "75")
 
 	cfg, err := Load(profileDir, "", os.LookupEnv, nullLogger{})
 	if err != nil {
@@ -235,23 +243,23 @@ func TestIntegration_Load_Mode_NoChange_v1Defaults_Preserved(t *testing.T) {
 		t.Errorf("resolved = %v want Balanced", resolved)
 	}
 
-	wantCPU := 91
-	wantGPU := 92
-	wantHDD := 93
-	wantSSD := 94
-	if cfg.CPUTarget != wantCPU {
-		t.Errorf("CPUTarget = %d want %d (profile sentinel preserved)", cfg.CPUTarget, wantCPU)
+	// CPU + GPU env-set → those values win.
+	if cfg.CPUTarget != 60 {
+		t.Errorf("CPUTarget = %d want 60 (env override)", cfg.CPUTarget)
 	}
-	if cfg.GPUTarget != wantGPU {
-		t.Errorf("GPUTarget = %d want %d (profile sentinel preserved)", cfg.GPUTarget, wantGPU)
-	}
-	if cfg.HDDTarget != wantHDD {
-		t.Errorf("HDDTarget = %d want %d (profile sentinel preserved)", cfg.HDDTarget, wantHDD)
-	}
-	if cfg.SSDTarget != wantSSD {
-		t.Errorf("SSDTarget = %d want %d (profile sentinel preserved)", cfg.SSDTarget, wantSSD)
+	if cfg.GPUTarget != 75 {
+		t.Errorf("GPUTarget = %d want 75 (env override)", cfg.GPUTarget)
 	}
 
+	// HDD + SSD env-unset, profile-set → profile yields, mode-derived wins.
+	if cfg.HDDTarget != 38 {
+		t.Errorf("HDDTarget = %d want 38 (mode Balanced, profile yielded)", cfg.HDDTarget)
+	}
+	if cfg.SSDTarget != 50 {
+		t.Errorf("SSDTarget = %d want 50 (mode Balanced, profile yielded)", cfg.SSDTarget)
+	}
+
+	// All deadbands are mode-derived (no per-class deadband env vars set).
 	if cfg.CPUDeadband != 3 || cfg.GPUDeadband != 3 || cfg.HDDDeadband != 3 || cfg.SSDDeadband != 3 {
 		t.Errorf("All deadbands = %d/%d/%d/%d want all 3 (Balanced-derived)", cfg.CPUDeadband, cfg.GPUDeadband, cfg.HDDDeadband, cfg.SSDDeadband)
 	}

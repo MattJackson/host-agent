@@ -274,11 +274,19 @@ func findRepoRoot(t *testing.T) string {
 // Compile-time check we satisfy stdlib log.Logger duck-shape.
 var _ Logger = (*log.Logger)(nil)
 
-func TestApplyMode_NoEnv_NoOverride(t *testing.T) {
-	cfg := &Config{Raw: map[string]string{}}
+func TestApplyMode_NoEnv_Noop(t *testing.T) {
+	// HOST_AGENT_MODE unset → ApplyMode is a no-op. cfg keeps whatever
+	// values were already there (the v1 path).
+	cfg := &Config{
+		Raw:       map[string]string{},
+		CPUTarget: 70, CPUDeadband: 3,
+		GPUTarget: 83, GPUDeadband: 2,
+		HDDTarget: 40, HDDDeadband: 3,
+		SSDTarget: 50, SSDDeadband: 5,
+	}
 	resolved, set, err := ApplyMode(cfg)
 	if resolved != mode.Balanced {
-		t.Errorf("resolved = %v want Balanced", resolved)
+		t.Errorf("resolved = %v want Balanced (default fallback)", resolved)
 	}
 	if set {
 		t.Error("set = true want false")
@@ -286,19 +294,18 @@ func TestApplyMode_NoEnv_NoOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	wantCPU := 65
-	wantGPUDeadband := 3
-	if cfg.CPUTarget != wantCPU {
-		t.Errorf("CPUTarget = %d want %d", cfg.CPUTarget, wantCPU)
+	// Values must be UNCHANGED from input.
+	if cfg.CPUTarget != 70 || cfg.CPUDeadband != 3 {
+		t.Errorf("CPU = %d/%d want 70/3 (unchanged)", cfg.CPUTarget, cfg.CPUDeadband)
 	}
-	if cfg.GPUDeadband != wantGPUDeadband {
-		t.Errorf("GPUDeadband = %d want %d", cfg.GPUDeadband, wantGPUDeadband)
+	if cfg.GPUTarget != 83 || cfg.GPUDeadband != 2 {
+		t.Errorf("GPU = %d/%d want 83/2 (unchanged)", cfg.GPUTarget, cfg.GPUDeadband)
 	}
-	if cfg.HDDTarget != 38 || cfg.HDDDeadband != 3 {
-		t.Errorf("HDD target/deadband = %d/%d want 38/3", cfg.HDDTarget, cfg.HDDDeadband)
+	if cfg.HDDTarget != 40 || cfg.HDDDeadband != 3 {
+		t.Errorf("HDD = %d/%d want 40/3 (unchanged)", cfg.HDDTarget, cfg.HDDDeadband)
 	}
-	if cfg.SSDTarget != 50 || cfg.SSDDeadband != 3 {
-		t.Errorf("SSD target/deadband = %d/%d want 50/3", cfg.SSDTarget, cfg.SSDDeadband)
+	if cfg.SSDTarget != 50 || cfg.SSDDeadband != 5 {
+		t.Errorf("SSD = %d/%d want 50/5 (unchanged)", cfg.SSDTarget, cfg.SSDDeadband)
 	}
 }
 
@@ -409,8 +416,12 @@ func TestApplyMode_Eco(t *testing.T) {
 	}
 }
 
-func TestApplyMode_PerClassOverride_Wins(t *testing.T) {
+func TestApplyMode_PerClassEnvOverride_Wins(t *testing.T) {
+	// In v2: only ENV-VAR per-class overrides win. cfg.Raw["CPU_TARGET"]
+	// from a profile is NOT an override and gets replaced by the
+	// mode-derived value.
 	t.Setenv("HOST_AGENT_MODE", "balanced")
+	t.Setenv("CPU_TARGET", "70")
 	cfg := &Config{Raw: map[string]string{"CPU_TARGET": "70"}, CPUTarget: 70}
 	resolved, _, err := ApplyMode(cfg)
 	if resolved != mode.Balanced {
@@ -467,8 +478,10 @@ func TestApplyMode_BadMode_FallsBackToBalanced(t *testing.T) {
 	}
 }
 
-func TestApplyMode_DeadbandOverride_Independent(t *testing.T) {
+func TestApplyMode_DeadbandEnvOverride_Independent(t *testing.T) {
+	// Per-class deadband env-var override wins independently of target.
 	t.Setenv("HOST_AGENT_MODE", "balanced")
+	t.Setenv("GPU_DEADBAND", "6")
 	cfg := &Config{Raw: map[string]string{"GPU_DEADBAND": "6"}, GPUDeadband: 6}
 	resolved, _, err := ApplyMode(cfg)
 	if resolved != mode.Balanced {
