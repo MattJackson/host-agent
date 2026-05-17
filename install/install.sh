@@ -78,7 +78,7 @@ docker run -d \
   -v /run/containerd:/run/containerd:ro \
   -v /var/lib/docker:/var/lib/docker:ro \
   -v /dev:/dev \
-  -v "$STATE_DIR":/var/lib/fan-controller \
+  -v "$STATE_DIR":/var/lib/host-agent \
   "$IMAGE"
 
 echo

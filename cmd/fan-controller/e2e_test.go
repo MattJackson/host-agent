@@ -43,7 +43,7 @@ func (bufLog) Printf(string, ...any) {}
 // final metrics file matches a golden fixture exactly.
 //
 // The point of this test is to lock down the exact bytes written to
-// /var/lib/fan-controller/state/metrics.prom — node-exporter's textfile
+// /var/lib/host-agent/state/metrics.prom — node-exporter's textfile
 // collector and the Grafana dashboard both depend on this exact shape.
 // Any drift in metric names, labels, or value formatting breaks the
 // dashboard silently.

@@ -2,7 +2,7 @@
 // Per-class PIDs (CPU, passive_gpu, active_gpu, hdd, ssd) emit
 // candidate fan speeds; max() wins, plus per-class proximity floors
 // and an active-GPU assist lift. EWMA-tracked equilibrium baseline
-// persisted to /var/lib/fan-controller/state/base. See host-agent/README.md.
+// persisted to /var/lib/host-agent/state/base. See host-agent/README.md.
 package main
 
 import (
@@ -35,10 +35,10 @@ var version = "dev"
 
 const (
 	profileDir          = "/etc/fan-controller/profiles"
-	stateDir            = "/var/lib/fan-controller/state"
-	stateFile           = "/var/lib/fan-controller/state/base"
-	metricsFile         = "/var/lib/fan-controller/state/metrics.prom"
-	adaptiveMetricsFile = "/var/lib/fan-controller/state/adaptive.prom"
+	stateDir            = "/var/lib/host-agent/state"
+	stateFile           = "/var/lib/host-agent/state/base"
+	metricsFile         = "/var/lib/host-agent/state/metrics.prom"
+	adaptiveMetricsFile = "/var/lib/host-agent/state/adaptive.prom"
 )
 
 // stdLogger emits the bash log line format: "YYYY-MM-DD HH:MM:SS - msg".
@@ -84,8 +84,20 @@ func main() {
 	}
 	logActiveProfile(logger, cfg)
 
-	// 2b: Build adaptive observer.
+	// 2b: Build adaptive observer + restore prior window from disk so
+	// learnings (sample window, inlet baseline) survive container
+	// restart and image upgrade. A 2-hour warmup penalty per restart
+	// would otherwise gate every drift decision.
 	obs := buildObserver(logger, cfg)
+	observerPath := adaptive.DefaultObserverPath
+	if op := os.Getenv("HOST_AGENT_OBSERVER_PATH"); op != "" {
+		observerPath = op
+	}
+	if loaded, err := obs.LoadFrom(observerPath); err != nil {
+		logger.Printf("adaptive observer: starting cold (load %s: %v)", observerPath, err)
+	} else if loaded {
+		logger.Printf("adaptive observer: restored sample window from %s", observerPath)
+	}
 
 	// 2c: Read env vars for reconciler config.
 	var adaptiveCycleMin int = 10
@@ -253,6 +265,11 @@ func main() {
 			sampleObserver(obs, c)
 			if err := adaptive.WriteAdaptiveMetrics(adaptiveMetricsFile, obs, recon); err != nil {
 				logger.Printf("WARN: adaptive metrics write: %v", err)
+			}
+			// Persist observer window so it survives container restart.
+			// Best-effort; persistence errors are non-fatal.
+			if err := obs.SaveTo(observerPath); err != nil {
+				logger.Printf("WARN: observer persist: %v", err)
 			}
 		}
 	}

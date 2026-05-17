@@ -44,7 +44,7 @@ export PROMETHEUS_REMOTE_WRITE_URL=https://your.prometheus/api/v1/write
 # 2. (Dell hosts only) load the IPMI kernel module + create state dir.
 sudo modprobe ipmi_devintf
 echo ipmi_devintf | sudo tee /etc/modules-load.d/ipmi.conf
-sudo install -d -m 755 /var/lib/fan-controller/state
+sudo install -d -m 755 /var/lib/host-agent/state
 
 # 3. Run.
 docker run -d \
@@ -60,7 +60,7 @@ docker run -d \
   -v /run/containerd:/run/containerd:ro \
   -v /var/lib/docker:/var/lib/docker:ro \
   -v /dev:/dev \
-  -v /var/lib/fan-controller:/var/lib/fan-controller \
+  -v /var/lib/host-agent:/var/lib/host-agent \
   "$HOST_AGENT_IMAGE"
 ```
 
@@ -81,7 +81,7 @@ The container will appear in your Prometheus on its first scrape, labeled with `
 
 `unraid-disks` emits a textfile metric `unraid_disk_info{device,slot}` mapping Unraid's array slot labels (`disk1`, `parity`, `cache`, ...) to Linux device names by parsing `/var/local/emhttp/disks.ini`. Dashboards join on `(host, device)` to display the slot label instead of the bare `sdX` letter — matches the bay labeling in Unraid's own UI.
 
-`node_exporter` runs with `--collector.textfile.directory=/var/lib/fan-controller/state`, so the fan controller's own state metrics (setpoint, EWMA baseline, per-class temps & targets) are emitted alongside the standard node metrics on `:9100`. The dashboard treats them as native Prometheus series.
+`node_exporter` runs with `--collector.textfile.directory=/var/lib/host-agent/state`, so the fan controller's own state metrics (setpoint, EWMA baseline, per-class temps & targets) are emitted alongside the standard node metrics on `:9100`. The dashboard treats them as native Prometheus series.
 
 ## Install
 
@@ -117,7 +117,7 @@ services:
       - /run/containerd:/run/containerd:ro
       - /var/lib/docker:/var/lib/docker:ro
       - /dev:/dev
-      - /var/lib/fan-controller:/var/lib/fan-controller
+      - /var/lib/host-agent:/var/lib/host-agent
 ```
 
 Drop the two env vars in an `.env` next to the compose, then `docker compose up -d`. The `infra/deploy.sh` wrapper in this repo handles the "auto-detect nvidia runtime" case.
@@ -166,8 +166,8 @@ Every knob is an env var. Required:
 **Persistent URL fallback** (recommended on Unraid and any platform with a managed container UI): write the URL to a file inside the state mount instead of (or in addition to) the env var:
 
 ```sh
-mkdir -p /var/lib/fan-controller/config   # on Unraid: /mnt/user/appdata/host-agent/config/
-echo "https://your.prometheus/api/v1/write" > /var/lib/fan-controller/config/remote_write_url
+mkdir -p /var/lib/host-agent/config   # on Unraid: /mnt/user/appdata/host-agent/config/
+echo "https://your.prometheus/api/v1/write" > /var/lib/host-agent/config/remote_write_url
 ```
 
 vmagent reads from this file if `PROMETHEUS_REMOTE_WRITE_URL` is unset or equal to the example.com placeholder. The file lives in the appdata mount, so it survives container recreations, image updates, and template re-curls — set it once, never reconfigure.
@@ -279,7 +279,7 @@ final_speed = max(cpu_cand, pg_cand, hdd_cand, ssd_cand,
                   cpu_pf, pg_pf, ag_pf, hdd_pf, ssd_pf,
                   ag_assist)
 
-EWMA baseline (persisted to /var/lib/fan-controller/state/base):
+EWMA baseline (persisted to /var/lib/host-agent/state/base):
     base_speed = α × current_speed + (1-α) × base_speed
     # α = 0.001/cycle → settles over 24-48 hrs of operation.
 ```
@@ -333,7 +333,7 @@ docker logs host-agent --tail 100 -f
 
 **Controller state**:
 ```sh
-sudo cat /var/lib/fan-controller/state/base
+sudo cat /var/lib/host-agent/state/base
 # base_speed=22.4515  ← EWMA of equilibrium fan speed
 # last_speed=45       ← actual fan speed at last write
 # samples=109         ← cycles since restart

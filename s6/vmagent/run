@@ -37,7 +37,7 @@
 
 # URL resolution order:
 #   1. PROMETHEUS_REMOTE_WRITE_URL env (if set AND not the placeholder).
-#   2. /var/lib/fan-controller/config/remote_write_url file (persistent
+#   2. /var/lib/host-agent/config/remote_write_url file (persistent
 #      override stored in the appdata mount — survives every container
 #      recreation, image update, and template re-curl).
 #   3. Disable vmagent.
@@ -46,7 +46,7 @@
 # Force Update on certain code paths) reset env vars to the template's
 # Default attribute. By persisting in appdata, the user sets the URL
 # ONCE and it survives every update without reconfiguration.
-URL_FILE=/var/lib/fan-controller/config/remote_write_url
+URL_FILE=/var/lib/host-agent/config/remote_write_url
 PLACEHOLDER="https://your-prometheus.example.com/api/v1/write"
 
 REMOTE_WRITE_URL="${PROMETHEUS_REMOTE_WRITE_URL:-}"
@@ -70,7 +70,7 @@ if [ -z "$REMOTE_WRITE_URL" ]; then
   echo "[vmagent] Sibling exporters (node, cadvisor, ipmi, smartctl, nvidia-gpu, fan controller) continue running."
   exec sleep infinity
 fi
-WAL_DIR=/var/lib/fan-controller/vmagent-wal
+WAL_DIR=/var/lib/host-agent/vmagent-wal
 PROFILE_DIR=/etc/fan-controller/profiles
 
 # Image build version (short git SHA, written at build time).
@@ -101,7 +101,7 @@ set -a; . "$PROFILE_DIR/default.env"; set +a
 # Write host_agent_info textfile NOW that MODEL/PROFILE_FILE are known.
 # node-exporter's textfile collector picks it up as
 # host_agent_info{version,chassis,profile} = 1.
-TEXTFILE_DIR=/var/lib/fan-controller/state
+TEXTFILE_DIR=/var/lib/host-agent/state
 mkdir -p "$TEXTFILE_DIR"
 cat > "$TEXTFILE_DIR/.host_agent_info.prom.tmp" <<EOF
 # HELP host_agent_info Build version + detected chassis profile for the host-agent container.

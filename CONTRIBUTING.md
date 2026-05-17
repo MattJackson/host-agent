@@ -107,7 +107,7 @@ under `internal/sensors/testdata/`.
    - chassis model + iDRAC/BMC firmware version
    - `dmidecode -s system-product-name` output
    - the fan-floor behavior you observed (which PWM values do what)
-   - a screenshot or paste of `/var/lib/fan-controller/state/metrics.prom`
+   - a screenshot or paste of `/var/lib/host-agent/state/metrics.prom`
      after the controller has been running for at least a few hours.
 
 ## Submitting PRs
@@ -132,5 +132,5 @@ For functional bugs, open a GitHub issue with:
 - chassis (`dmidecode -s system-product-name`) + which profile loaded
   (visible in container logs as `[fan-controller] chassis=…`)
 - `docker logs host-agent --tail 200` output around the bad behavior
-- contents of `/var/lib/fan-controller/state/metrics.prom`
+- contents of `/var/lib/host-agent/state/metrics.prom`
 - expected vs actual behavior

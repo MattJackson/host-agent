@@ -17,14 +17,14 @@
 #     device="sdc"
 #     ...
 #
-# Output: /var/lib/fan-controller/state/unraid_disks.prom — picked up by
+# Output: /var/lib/host-agent/state/unraid_disks.prom — picked up by
 # node-exporter's textfile collector on the next :9100 scrape.
 
 set -eu
 
 UNRAID_MARKER=/host/etc/unraid-version
 DISKS_INI=/host/var/local/emhttp/disks.ini
-TEXTFILE_DIR=/var/lib/fan-controller/state
+TEXTFILE_DIR=/var/lib/host-agent/state
 OUT="$TEXTFILE_DIR/unraid_disks.prom"
 TMP="$TEXTFILE_DIR/.unraid_disks.prom.tmp"
 INTERVAL=60

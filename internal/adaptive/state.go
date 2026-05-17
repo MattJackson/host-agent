@@ -19,9 +19,22 @@ import (
 const stateSchemaVersion = 1
 
 // DefaultStatePath is where the adaptive controller persists its
-// learned state. Same parent dir as fan-controller's base file so
-// operators have one place to look.
+// learned state. Lives alongside fan-controller's base file in
+// /var/lib/host-agent/state/, which is bind-mounted from the host
+// via the standard host-agent compose template — so state survives
+// container recreate / image upgrade. The earlier path
+// /var/lib/host-agent/state/adaptive.json was inside the ephemeral
+// container layer and got wiped on every restart, defeating
+// persistence (fixed v0.2.2).
 const DefaultStatePath = "/var/lib/host-agent/state/adaptive.json"
+
+// DefaultObserverPath is where the observer's rolling sample window is
+// persisted. Same /var/lib/host-agent/state/ mount as State, so
+// observer samples (the actual learnings about the host's thermal
+// behavior) carry across container restart, image upgrade, AND mode
+// change. Without this, every restart triggers a 2-hour observer
+// warmup before the reconciler can make drift decisions.
+const DefaultObserverPath = "/var/lib/host-agent/state/observer.json"
 
 // ClassState is the per-class slice of persisted adaptive state.
 // Field names mirror the design doc §11. Float values for the running

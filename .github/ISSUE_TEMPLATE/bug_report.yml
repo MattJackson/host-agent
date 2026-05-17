@@ -91,6 +91,6 @@ body:
     attributes:
       label: Controller state
       description: |
-        Contents of `/var/lib/fan-controller/state/metrics.prom`
+        Contents of `/var/lib/host-agent/state/metrics.prom`
         (sudo cat on the host).
       render: text

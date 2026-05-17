@@ -4,7 +4,13 @@
 package adaptive
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"math"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -12,14 +18,31 @@ import (
 	"github.com/pq/docker-server/host-agent/internal/mode"
 )
 
+// observerSchemaVersion is the on-disk format version for the
+// observer's persisted state. Bump on incompatible changes.
+const observerSchemaVersion = 1
+
 // Sample is one snapshot of a thermal class's state taken once per PID
 // cycle (15s by default). The observer maintains a rolling window of
 // these per class.
 type Sample struct {
-	Timestamp    time.Time
-	TempCelsius  float64 // class-aggregated (mean of all members of this class on this host)
-	FanDemandPct int     // controller's commanded fan %
-	InletCelsius float64 // ambient inlet temp (from chassis sensor)
+	Timestamp    time.Time `json:"ts"`
+	TempCelsius  float64   `json:"t"`
+	FanDemandPct int       `json:"f"`
+	InletCelsius float64   `json:"i"`
+}
+
+// observerSnapshot is the on-disk shape of /var/lib/host-agent/
+// state/observer.json — the observer's rolling window samples and the
+// inlet-tracking state.
+type observerSnapshot struct {
+	Version       int                         `json:"version"`
+	WindowSize    int                         `json:"window_size"`
+	InletJumpC    float64                     `json:"inlet_jump_c"`
+	LastInlet     float64                     `json:"last_inlet,omitempty"`
+	HaveLastInlet bool                        `json:"have_last_inlet"`
+	Buffers       map[envelope.Class][]Sample `json:"buffers"`
+	SavedAt       time.Time                   `json:"saved_at"`
 }
 
 // Observer maintains per-class rolling windows of Samples and computes
@@ -258,4 +281,95 @@ func (o *Observer) Reset(class envelope.Class) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.buffers[class] = nil
+}
+
+// SaveTo serializes the observer's full window state to path atomically
+// (temp file + rename). Called periodically from main so that observer
+// learnings — the actual hardware/environment measurements — survive
+// container restart, image upgrade, and mode change. Without this,
+// every restart triggers a 2-hour warmup before adaptive drift can
+// resume.
+//
+// Schema is observerSchemaVersion-tagged. On version mismatch, LoadFrom
+// silently discards and starts cold. Errors here are returned but the
+// caller should tolerate them — losing persistence for one cycle is
+// not worth crashing the controller.
+func (o *Observer) SaveTo(path string) error {
+	o.mu.Lock()
+	snap := observerSnapshot{
+		Version:       observerSchemaVersion,
+		WindowSize:    o.windowSize,
+		InletJumpC:    o.inletJumpC,
+		LastInlet:     o.lastInlet,
+		HaveLastInlet: o.haveLastInlet,
+		Buffers:       make(map[envelope.Class][]Sample, len(o.buffers)),
+		SavedAt:       time.Now(),
+	}
+	// Copy each buffer so the rest of the encode happens without the lock.
+	for class, buf := range o.buffers {
+		copyBuf := make([]Sample, len(buf))
+		copy(copyBuf, buf)
+		snap.Buffers[class] = copyBuf
+	}
+	o.mu.Unlock()
+
+	raw, err := json.Marshal(snap)
+	if err != nil {
+		return fmt.Errorf("encode observer snapshot: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return fmt.Errorf("write tmp: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("rename: %w", err)
+	}
+	return nil
+}
+
+// LoadFrom restores observer state from a previous SaveTo. Called at
+// startup. Returns (loaded, err): loaded=true means a valid snapshot
+// was restored; loaded=false means no file present OR the file was
+// corrupt / version-mismatched / window-size-changed (in which case
+// the observer is left empty and the caller logs the warning).
+//
+// Window-size mismatch is an intentional reset: if the operator
+// changed OBSERVER_WINDOW_MINUTES between runs, the persisted samples
+// would no longer fit the new ring buffer cleanly. Better to start
+// cold than serve confusing partial data.
+func (o *Observer) LoadFrom(path string) (loaded bool, err error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read %s: %w", path, err)
+	}
+	var snap observerSnapshot
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		return false, fmt.Errorf("decode %s: %w", path, err)
+	}
+	if snap.Version != observerSchemaVersion {
+		return false, fmt.Errorf("%s: version %d unsupported (want %d)", path, snap.Version, observerSchemaVersion)
+	}
+	if snap.WindowSize != o.windowSize {
+		return false, fmt.Errorf("%s: persisted windowSize %d != current %d (config change — starting cold)",
+			path, snap.WindowSize, o.windowSize)
+	}
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for class, buf := range snap.Buffers {
+		// Cap restored buffer at current windowSize defensively.
+		if len(buf) > o.windowSize {
+			buf = buf[len(buf)-o.windowSize:]
+		}
+		o.buffers[class] = buf
+	}
+	o.lastInlet = snap.LastInlet
+	o.haveLastInlet = snap.HaveLastInlet
+	return true, nil
 }

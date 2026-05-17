@@ -6,6 +6,38 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-17
+
+### BREAKING — host path namespace
+
+- **State directory: `/var/lib/fan-controller/` → `/var/lib/host-agent/`** everywhere. The new bind mount is `/var/lib/host-agent:/var/lib/host-agent`. The Go binary is still called `fan-controller` (it IS the fan controller; that name is accurate), but the host-side namespace is now consistent with the umbrella container name (`host-agent`).
+- All sub-services updated: node-exporter's `--collector.textfile.directory`, vmagent's WAL + URL-fallback paths, unraid-disks textfile output, fan-controller's EWMA `base` file, adaptive state + observer files.
+- No automatic migration — this is a clean break. Operators upgrading from v0.2.x should either:
+  1. Recreate the container with the new mount and let it start cold (lose 24-48h of EWMA learning), or
+  2. `cp -a /var/lib/fan-controller/. /var/lib/host-agent/` before swapping mounts, to preserve baseline.
+
+### Added — observer window persistence
+
+- **Observer's rolling sample window now persists** to `/var/lib/host-agent/state/observer.json` (atomic write each PID cycle). On container restart / image upgrade / mode change, the observer restores its prior window so the reconciler can make drift decisions immediately — no more 2-hour warmup penalty after every restart.
+- Loaded snapshot is validated: schema-version mismatch or windowSize-config change discards it and starts cold (logged).
+- The HARDWARE/ENVIRONMENT learnings (sample window, inlet baseline, variance EWMA) are independent of mode. Changing `HOST_AGENT_MODE` now keeps the observer's window — only target/deadband reset to the new mode's initial values. Mode change kicks in fast: first drift decision can fire on the very next 10-min reconcile cycle.
+
+### Fixed
+
+- **Bug**: adaptive state path `/var/lib/host-agent/state/adaptive.json` was previously inside the ephemeral container layer (the `/var/lib/host-agent` directory wasn't bind-mounted in v0.2.x). State writes succeeded but data was lost on every restart. v0.3.0's new bind mount + path correction makes state actually persistent.
+
+### Migration
+
+```
+# On each host running v0.2.x:
+sudo systemctl stop host-agent || true
+sudo cp -a /var/lib/fan-controller/. /var/lib/host-agent/   # optional, preserves EWMA + adaptive state
+# update compose / Unraid template mount: /var/lib/host-agent:/var/lib/host-agent
+sudo docker compose -p host-agent up -d  # or Force Update on Unraid
+```
+
+The fleet can also just start cold — 24-48h to re-learn EWMA, 2 hours for adaptive observer warmup. Operator's choice.
+
 ## [0.2.1] — 2026-05-17
 
 ### Changed
@@ -112,7 +144,7 @@ field doesn't exist.
 
 ### Added
 
-- **Persistent URL fallback file**: `/var/lib/fan-controller/config/remote_write_url`
+- **Persistent URL fallback file**: `/var/lib/host-agent/config/remote_write_url`
   (on Unraid: `/mnt/user/appdata/host-agent/config/remote_write_url`).
   If `PROMETHEUS_REMOTE_WRITE_URL` env is unset or equal to the placeholder,
   vmagent reads the URL from this file instead. The file lives in the

@@ -1,5 +1,5 @@
 // Package metrics emits the Prometheus textfile-collector file that
-// the bash original writes to /var/lib/fan-controller/state/metrics.prom.
+// the bash original writes to /var/lib/host-agent/state/metrics.prom.
 //
 // The shape (metric names, label keys, label values, HELP/TYPE lines)
 // must match the bash exactly — node-exporter's textfile collector
