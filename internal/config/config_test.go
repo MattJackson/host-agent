@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pq/docker-server/host-agent/internal/mode"
 )
 
 // nullLogger absorbs logger output during tests without polluting test
@@ -271,3 +273,226 @@ func findRepoRoot(t *testing.T) string {
 
 // Compile-time check we satisfy stdlib log.Logger duck-shape.
 var _ Logger = (*log.Logger)(nil)
+
+func TestApplyMode_NoEnv_NoOverride(t *testing.T) {
+	cfg := &Config{Raw: map[string]string{}}
+	resolved, set, err := ApplyMode(cfg)
+	if resolved != mode.Balanced {
+		t.Errorf("resolved = %v want Balanced", resolved)
+	}
+	if set {
+		t.Error("set = true want false")
+	}
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	wantCPU := 65
+	wantGPUDeadband := 3
+	if cfg.CPUTarget != wantCPU {
+		t.Errorf("CPUTarget = %d want %d", cfg.CPUTarget, wantCPU)
+	}
+	if cfg.GPUDeadband != wantGPUDeadband {
+		t.Errorf("GPUDeadband = %d want %d", cfg.GPUDeadband, wantGPUDeadband)
+	}
+	if cfg.HDDTarget != 38 || cfg.HDDDeadband != 3 {
+		t.Errorf("HDD target/deadband = %d/%d want 38/3", cfg.HDDTarget, cfg.HDDDeadband)
+	}
+	if cfg.SSDTarget != 50 || cfg.SSDDeadband != 3 {
+		t.Errorf("SSD target/deadband = %d/%d want 50/3", cfg.SSDTarget, cfg.SSDDeadband)
+	}
+}
+
+func TestApplyMode_Balanced(t *testing.T) {
+	t.Setenv("HOST_AGENT_MODE", "balanced")
+	cfg := &Config{Raw: map[string]string{}}
+	resolved, set, err := ApplyMode(cfg)
+	if resolved != mode.Balanced {
+		t.Errorf("resolved = %v want Balanced", resolved)
+	}
+	if !set {
+		t.Error("set = false want true")
+	}
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	wantCPU := 65
+	wantGPUDeadband := 3
+	if cfg.CPUTarget != wantCPU {
+		t.Errorf("CPUTarget = %d want %d", cfg.CPUTarget, wantCPU)
+	}
+	if cfg.GPUDeadband != wantGPUDeadband {
+		t.Errorf("GPUDeadband = %d want %d", cfg.GPUDeadband, wantGPUDeadband)
+	}
+	if cfg.HDDTarget != 38 || cfg.HDDDeadband != 3 {
+		t.Errorf("HDD target/deadband = %d/%d want 38/3", cfg.HDDTarget, cfg.HDDDeadband)
+	}
+	if cfg.SSDTarget != 50 || cfg.SSDDeadband != 3 {
+		t.Errorf("SSD target/deadband = %d/%d want 50/3", cfg.SSDTarget, cfg.SSDDeadband)
+	}
+}
+
+func TestApplyMode_MaxCool(t *testing.T) {
+	t.Setenv("HOST_AGENT_MODE", "max-cool")
+	cfg := &Config{Raw: map[string]string{}}
+	resolved, _, err := ApplyMode(cfg)
+	if resolved != mode.MaxCool {
+		t.Errorf("resolved = %v want MaxCool", resolved)
+	}
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	wantCPU := 55
+	wantGPUDeadband := 2
+	if cfg.CPUTarget != wantCPU {
+		t.Errorf("CPUTarget = %d want %d", cfg.CPUTarget, wantCPU)
+	}
+	if cfg.GPUDeadband != wantGPUDeadband {
+		t.Errorf("GPUDeadband = %d want %d", cfg.GPUDeadband, wantGPUDeadband)
+	}
+	if cfg.HDDTarget != 32 || cfg.HDDDeadband != 2 {
+		t.Errorf("HDD target/deadband = %d/%d want 32/2", cfg.HDDTarget, cfg.HDDDeadband)
+	}
+	if cfg.SSDTarget != 45 || cfg.SSDDeadband != 2 {
+		t.Errorf("SSD target/deadband = %d/%d want 45/2", cfg.SSDTarget, cfg.SSDDeadband)
+	}
+}
+
+func TestApplyMode_MinNoise(t *testing.T) {
+	t.Setenv("HOST_AGENT_MODE", "min-noise")
+	cfg := &Config{Raw: map[string]string{}}
+	resolved, _, err := ApplyMode(cfg)
+	if resolved != mode.MinNoise {
+		t.Errorf("resolved = %v want MinNoise", resolved)
+	}
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	wantCPU := 75
+	wantGPUDeadband := 4
+	if cfg.CPUTarget != wantCPU {
+		t.Errorf("CPUTarget = %d want %d", cfg.CPUTarget, wantCPU)
+	}
+	if cfg.GPUDeadband != wantGPUDeadband {
+		t.Errorf("GPUDeadband = %d want %d", cfg.GPUDeadband, wantGPUDeadband)
+	}
+	if cfg.HDDTarget != 43 || cfg.HDDDeadband != 4 {
+		t.Errorf("HDD target/deadband = %d/%d want 43/4", cfg.HDDTarget, cfg.HDDDeadband)
+	}
+	if cfg.SSDTarget != 60 || cfg.SSDDeadband != 4 {
+		t.Errorf("SSD target/deadband = %d/%d want 60/4", cfg.SSDTarget, cfg.SSDDeadband)
+	}
+}
+
+func TestApplyMode_Eco(t *testing.T) {
+	t.Setenv("HOST_AGENT_MODE", "eco")
+	cfg := &Config{Raw: map[string]string{}}
+	resolved, _, err := ApplyMode(cfg)
+	if resolved != mode.Eco {
+		t.Errorf("resolved = %v want Eco", resolved)
+	}
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	wantCPU := 75
+	wantGPUDeadband := 5
+	if cfg.CPUTarget != wantCPU {
+		t.Errorf("CPUTarget = %d want %d", cfg.CPUTarget, wantCPU)
+	}
+	if cfg.GPUDeadband != wantGPUDeadband {
+		t.Errorf("GPUDeadband = %d want %d", cfg.GPUDeadband, wantGPUDeadband)
+	}
+	if cfg.HDDTarget != 43 || cfg.HDDDeadband != 5 {
+		t.Errorf("HDD target/deadband = %d/%d want 43/5", cfg.HDDTarget, cfg.HDDDeadband)
+	}
+	if cfg.SSDTarget != 60 || cfg.SSDDeadband != 5 {
+		t.Errorf("SSD target/deadband = %d/%d want 60/5", cfg.SSDTarget, cfg.SSDDeadband)
+	}
+}
+
+func TestApplyMode_PerClassOverride_Wins(t *testing.T) {
+	t.Setenv("HOST_AGENT_MODE", "balanced")
+	cfg := &Config{Raw: map[string]string{"CPU_TARGET": "70"}, CPUTarget: 70}
+	resolved, _, err := ApplyMode(cfg)
+	if resolved != mode.Balanced {
+		t.Errorf("resolved = %v want Balanced", resolved)
+	}
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if cfg.CPUTarget != 70 {
+		t.Errorf("CPUTarget = %d want 70 (override wins)", cfg.CPUTarget)
+	}
+	wantGPU := 72
+	wantGPUDeadband := 3
+	if cfg.GPUTarget != wantGPU {
+		t.Errorf("GPUTarget = %d want %d", cfg.GPUTarget, wantGPU)
+	}
+	if cfg.GPUDeadband != wantGPUDeadband {
+		t.Errorf("GPUDeadband = %d want %d", cfg.GPUDeadband, wantGPUDeadband)
+	}
+	if cfg.HDDTarget != 38 || cfg.HDDDeadband != 3 {
+		t.Errorf("HDD target/deadband = %d/%d want 38/3", cfg.HDDTarget, cfg.HDDDeadband)
+	}
+	if cfg.SSDTarget != 50 || cfg.SSDDeadband != 3 {
+		t.Errorf("SSD target/deadband = %d/%d want 50/3", cfg.SSDTarget, cfg.SSDDeadband)
+	}
+}
+
+func TestApplyMode_BadMode_FallsBackToBalanced(t *testing.T) {
+	t.Setenv("HOST_AGENT_MODE", "garbage")
+	cfg := &Config{Raw: map[string]string{}}
+	resolved, set, err := ApplyMode(cfg)
+	if resolved != mode.Balanced {
+		t.Errorf("resolved = %v want Balanced (fallback)", resolved)
+	}
+	if !set {
+		t.Error("set = false want true")
+	}
+	if err == nil {
+		t.Fatal("err = nil, expected error for invalid mode")
+	}
+	wantCPU := 65
+	wantGPUDeadband := 3
+	if cfg.CPUTarget != wantCPU {
+		t.Errorf("CPUTarget = %d want %d (fallback applied)", cfg.CPUTarget, wantCPU)
+	}
+	if cfg.GPUDeadband != wantGPUDeadband {
+		t.Errorf("GPUDeadband = %d want %d", cfg.GPUDeadband, wantGPUDeadband)
+	}
+	if cfg.HDDTarget != 38 || cfg.HDDDeadband != 3 {
+		t.Errorf("HDD target/deadband = %d/%d want 38/3 (fallback applied)", cfg.HDDTarget, cfg.HDDDeadband)
+	}
+	if cfg.SSDTarget != 50 || cfg.SSDDeadband != 3 {
+		t.Errorf("SSD target/deadband = %d/%d want 50/3 (fallback applied)", cfg.SSDTarget, cfg.SSDDeadband)
+	}
+}
+
+func TestApplyMode_DeadbandOverride_Independent(t *testing.T) {
+	t.Setenv("HOST_AGENT_MODE", "balanced")
+	cfg := &Config{Raw: map[string]string{"GPU_DEADBAND": "6"}, GPUDeadband: 6}
+	resolved, _, err := ApplyMode(cfg)
+	if resolved != mode.Balanced {
+		t.Errorf("resolved = %v want Balanced", resolved)
+	}
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	wantGPU := 72
+	wantGPUDeadband := 6
+	if cfg.GPUTarget != wantGPU {
+		t.Errorf("GPUTarget = %d want %d (mode-derived)", cfg.GPUTarget, wantGPU)
+	}
+	if cfg.GPUDeadband != wantGPUDeadband {
+		t.Errorf("GPUDeadband = %d want %d (override preserved)", cfg.GPUDeadband, wantGPUDeadband)
+	}
+	if cfg.CPUTarget != 65 || cfg.CPUDeadband != 3 {
+		t.Errorf("CPU target/deadband = %d/%d want 65/3", cfg.CPUTarget, cfg.CPUDeadband)
+	}
+	if cfg.HDDTarget != 38 || cfg.HDDDeadband != 3 {
+		t.Errorf("HDD target/deadband = %d/%d want 38/3", cfg.HDDTarget, cfg.HDDDeadband)
+	}
+	if cfg.SSDTarget != 50 || cfg.SSDDeadband != 3 {
+		t.Errorf("SSD target/deadband = %d/%d want 50/3", cfg.SSDTarget, cfg.SSDDeadband)
+	}
+}
+
