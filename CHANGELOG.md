@@ -6,6 +6,24 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-05-17
+
+### Changed
+
+- **Image base: `debian:stable-slim` → `alpine:3`** with `gcompat` as a musl→glibc shim for the glibc-linked `nvidia-smi` that NVIDIA Container Runtime injects on GPU hosts. fan-controller and all upstream exporter binaries are Go-static and need neither libc.
+- **All Go binaries UPX-compressed** (`upx --best --lzma`) — fan-controller, node_exporter, cadvisor, ipmi_exporter, smartctl_exporter, nvidia_gpu_exporter, vmagent. Each compression wrapped in `|| true` so a binary that refuses to pack falls back to the uncompressed version.
+- **Image size: ~370 MB → ~170 MB** (~55% reduction). Runtime memory unchanged; ~50ms one-time decompression cost on container start.
+
+### Verified
+
+- nvidia-smi via gcompat returns expected output on both Tesla P4 (passive) and RTX A5500 (active) on the development host.
+- All seven sub-services start cleanly under s6 supervision on Alpine.
+- node-exporter `node_textfile_scrape_error=0` — adaptive metrics emit at the expected format.
+
+### Migration
+
+No operator action required. Drop-in replacement of the v0.2.0 container.
+
 ## [0.2.0] — 2026-05-17
 
 Adaptive setpoint controller. Operators pick **intent** (`HOST_AGENT_MODE`), the agent picks numbers. Per-class temperature targets are no longer fixed — they're derived from hardware envelopes encoded in the agent + the operator's intent, and continuously refined based on observed equilibrium.
