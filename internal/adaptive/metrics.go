@@ -125,3 +125,117 @@ func WriteObserverMetrics(path string, o *Observer) error {
 	}
 	return os.Rename(tmp, path)
 }
+
+// RenderReconcilerMetrics produces the textfile-collector bytes for the
+// Reconciler's current state + drift counters. Each metric has its own
+// HELP/TYPE pair and one line per class label in classesInRenderOrder order.
+//
+// Series emitted:
+// adaptive_mode_info{mode="balanced"} 1
+// adaptive_target_celsius{class} 65
+// adaptive_deadband_celsius{class} 3
+// adaptive_envelope_preferred_low{class} 55
+// adaptive_envelope_preferred_high{class} 75
+// adaptive_envelope_max_safe{class} 85
+// adaptive_target_drifts_total{class,direction} 12
+// adaptive_target_resets_total{class,reason} 1
+func RenderReconcilerMetrics(r *Reconciler) []byte {
+	var b bytes.Buffer
+
+	metrics := r.Metrics()
+
+	// adaptive_mode_info - single series, no class label
+	fmt.Fprintf(&b, "# HELP adaptive_mode_info Current active mode of the adaptive controller.\n")
+	fmt.Fprintf(&b, "# TYPE adaptive_mode_info gauge\n")
+	fmt.Fprintf(&b, "adaptive_mode_info{mode=%q} 1\n", string(metrics.Mode))
+	fmt.Fprintf(&b, "\n")
+
+	// For each class in render order
+	for _, c := range classesInRenderOrder {
+		cm, ok := metrics.Classes[c]
+		if !ok {
+			continue
+		}
+		env := cm.Envelope
+
+		// adaptive_target_celsius
+		fmt.Fprintf(&b, "# HELP adaptive_target_celsius Current adaptive target temperature for the class.\n")
+		fmt.Fprintf(&b, "# TYPE adaptive_target_celsius gauge\n")
+		fmt.Fprintf(&b, "adaptive_target_celsius{class=%q} %.4f\n", string(c), cm.TargetCelsius)
+		fmt.Fprintf(&b, "\n")
+
+		// adaptive_deadband_celsius
+		fmt.Fprintf(&b, "# HELP adaptive_deadband_celsius Current adaptive deadband for the class.\n")
+		fmt.Fprintf(&b, "# TYPE adaptive_deadband_celsius gauge\n")
+		fmt.Fprintf(&b, "adaptive_deadband_celsius{class=%q} %.4f\n", string(c), cm.DeadbandCelsius)
+		fmt.Fprintf(&b, "\n")
+
+		// adaptive_envelope_preferred_low
+		fmt.Fprintf(&b, "# HELP adaptive_envelope_preferred_low Envelope preferred-low temperature for the class.\n")
+		fmt.Fprintf(&b, "# TYPE adaptive_envelope_preferred_low gauge\n")
+		fmt.Fprintf(&b, "adaptive_envelope_preferred_low{class=%q} %d\n", string(c), env.PreferredLow)
+		fmt.Fprintf(&b, "\n")
+
+		// adaptive_envelope_preferred_high
+		fmt.Fprintf(&b, "# HELP adaptive_envelope_preferred_high Envelope preferred-high temperature for the class.\n")
+		fmt.Fprintf(&b, "# TYPE adaptive_envelope_preferred_high gauge\n")
+		fmt.Fprintf(&b, "adaptive_envelope_preferred_high{class=%q} %d\n", string(c), env.PreferredHigh)
+		fmt.Fprintf(&b, "\n")
+
+		// adaptive_envelope_max_safe
+		fmt.Fprintf(&b, "# HELP adaptive_envelope_max_safe Envelope max-safe temperature for the class.\n")
+		fmt.Fprintf(&b, "# TYPE adaptive_envelope_max_safe gauge\n")
+		fmt.Fprintf(&b, "adaptive_envelope_max_safe{class=%q} %d\n", string(c), env.MaxSafe)
+		fmt.Fprintf(&b, "\n")
+
+		// adaptive_target_drifts_total - for each direction that has count > 0
+		if dirs, ok := metrics.Drifts[c]; ok {
+			fmt.Fprintf(&b, "# HELP adaptive_target_drifts_total Total number of target drift events for the class.\n")
+			fmt.Fprintf(&b, "# TYPE adaptive_target_drifts_total counter\n")
+			if count, ok := dirs["up"]; ok && count > 0 {
+				fmt.Fprintf(&b, "adaptive_target_drifts_total{class=%q,direction=%q} %d\n", string(c), "up", count)
+			}
+			if count, ok := dirs["down"]; ok && count > 0 {
+				fmt.Fprintf(&b, "adaptive_target_drifts_total{class=%q,direction=%q} %d\n", string(c), "down", count)
+			}
+			fmt.Fprintf(&b, "\n")
+		}
+
+		// adaptive_target_resets_total - for each reason that has count > 0
+		if reasons, ok := metrics.Resets[c]; ok {
+			fmt.Fprintf(&b, "# HELP adaptive_target_resets_total Total number of target reset events for the class.\n")
+			fmt.Fprintf(&b, "# TYPE adaptive_target_resets_total counter\n")
+			for reason, count := range reasons {
+				if count > 0 {
+					fmt.Fprintf(&b, "adaptive_target_resets_total{class=%q,reason=%q} %d\n", string(c), string(reason), count)
+				}
+			}
+			fmt.Fprintf(&b, "\n")
+		}
+	}
+
+	return b.Bytes()
+}
+
+// WriteAdaptiveMetrics atomically writes the combined observer+reconciler
+// textfile-collector output. If r is nil, only observer metrics are emitted
+// (e.g. when HOST_AGENT_ADAPTIVE_DISABLED). Uses temp-file-then-rename for
+// atomicity so node-exporter never reads a torn file.
+func WriteAdaptiveMetrics(path string, o *Observer, r *Reconciler) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+
+	var buf bytes.Buffer
+	buf.Write(RenderObserverMetrics(o))
+	if r != nil {
+		buf.WriteByte('\n')
+		buf.Write(RenderReconcilerMetrics(r))
+	}
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}

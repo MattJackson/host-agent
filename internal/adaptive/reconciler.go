@@ -64,6 +64,23 @@ type DriftAction struct {
 	Now         time.Time
 }
 
+// ReconcilerMetrics is the exported state snapshot for metrics emission.
+type ReconcilerMetrics struct {
+	Mode    mode.Mode
+	Enabled bool                                // always true for now; reserved for HOST_AGENT_ADAPTIVE_DISABLED toggle
+	Classes map[envelope.Class]ClassMetrics     // current per-class state + envelope
+	Drifts  map[envelope.Class]map[string]int64 // direction → count
+	Resets  map[envelope.Class]map[DriftReason]int64
+}
+
+// ClassMetrics is the per-class snapshot included in ReconcilerMetrics.
+type ClassMetrics struct {
+	TargetCelsius   float64
+	DeadbandCelsius float64
+	Envelope        envelope.Envelope
+	LastUpdate      time.Time
+}
+
 // ReconcilerOptions configures a Reconciler.
 type ReconcilerOptions struct {
 	// Required.
@@ -106,6 +123,12 @@ type Reconciler struct {
 	o       ReconcilerOptions
 	state   State
 	classes []envelope.Class // stable order for action emission
+
+	// driftsByClassDirection is the per-Step accumulating counter state for drift direction. Updated inside Step() while r.mu is held. Read via Metrics().
+	driftsByClassDirection map[envelope.Class]map[string]int64 // direction: "up", "down"
+
+	// resetsByClassReason is the per-Step accumulating counter state for reset reasons. Updated inside Step() while r.mu is held. Read via Metrics().
+	resetsByClassReason map[envelope.Class]map[DriftReason]int64
 }
 
 // NewReconciler builds a Reconciler from options. Loads State from
@@ -177,6 +200,13 @@ func NewReconciler(opts ReconcilerOptions) (*Reconciler, error) {
 			LastUpdate:      opts.Now(),
 		}
 	}
+
+	r.driftsByClassDirection = map[envelope.Class]map[string]int64{}
+	r.resetsByClassReason = map[envelope.Class]map[DriftReason]int64{}
+	for _, c := range r.classes {
+		r.driftsByClassDirection[c] = map[string]int64{}
+		r.resetsByClassReason[c] = map[DriftReason]int64{}
+	}
 	return r, nil
 }
 
@@ -203,6 +233,47 @@ func (r *Reconciler) Target(c envelope.Class) (target int, deadband int, ok bool
 		return 0, 0, false
 	}
 	return int(math.Round(cs.TargetCelsius)), int(math.Round(cs.DeadbandCelsius)), true
+}
+
+// Metrics returns a snapshot of the Reconciler's exported state for
+// the metrics writer. Safe to call from any goroutine. Deep copies all maps.
+func (r *Reconciler) Metrics() ReconcilerMetrics {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := ReconcilerMetrics{
+		Mode:    r.o.Mode,
+		Enabled: true,
+		Classes: make(map[envelope.Class]ClassMetrics, len(r.state.Classes)),
+		Drifts:  make(map[envelope.Class]map[string]int64, len(r.driftsByClassDirection)),
+		Resets:  make(map[envelope.Class]map[DriftReason]int64, len(r.resetsByClassReason)),
+	}
+	for c, cs := range r.state.Classes {
+		env, ok := r.o.Envelopes[c]
+		if !ok {
+			continue
+		}
+		out.Classes[c] = ClassMetrics{
+			TargetCelsius:   cs.TargetCelsius,
+			DeadbandCelsius: cs.DeadbandCelsius,
+			Envelope:        env,
+			LastUpdate:      cs.LastUpdate,
+		}
+	}
+	for c, dirs := range r.driftsByClassDirection {
+		copyMap := make(map[string]int64, len(dirs))
+		for k, v := range dirs {
+			copyMap[k] = v
+		}
+		out.Drifts[c] = copyMap
+	}
+	for c, reasons := range r.resetsByClassReason {
+		copyMap := make(map[DriftReason]int64, len(reasons))
+		for k, v := range reasons {
+			copyMap[k] = v
+		}
+		out.Resets[c] = copyMap
+	}
+	return out
 }
 
 // Step runs ONE reconcile pass — once per ADAPTIVE_CYCLE_MINUTES from
@@ -289,7 +360,15 @@ func (r *Reconciler) reconcileClass(class envelope.Class, now time.Time) DriftAc
 		action.Reason = DriftReasonVarianceReset
 		action.NewTarget = t
 		action.NewDeadband = d
+
+		// Increment counter before returning.
+		r.resetsByClassReason[class][DriftReasonVarianceReset]++
+
 		return action
+	}
+
+	if class == envelope.CPU {
+		fmt.Printf("DEBUG reconcileClass CPU AFTER VAR CHECK: did NOT reset\n")
 	}
 
 	// Score current + projected ±drift.
@@ -358,5 +437,14 @@ func (r *Reconciler) reconcileClass(class envelope.Class, now time.Time) DriftAc
 		cs.LastChangeDirection = bestDelta
 	}
 	r.state.Classes[class] = cs
+
+	switch action.Reason {
+	case DriftReasonUp:
+		r.driftsByClassDirection[class]["up"]++
+	case DriftReasonDown:
+		r.driftsByClassDirection[class]["down"]++
+	case DriftReasonVarianceReset:
+		r.resetsByClassReason[class][DriftReasonVarianceReset]++
+	}
 	return action
 }

@@ -219,7 +219,7 @@ func main() {
 	// First cycle runs immediately (don't wait for the first tick).
 	runCycle(ctx, c)
 	sampleObserver(obs, c)
-	if err := adaptive.WriteObserverMetrics(adaptiveMetricsFile, obs); err != nil {
+	if err := adaptive.WriteAdaptiveMetrics(adaptiveMetricsFile, obs, recon); err != nil {
 		logger.Printf("WARN: adaptive metrics write: %v", err)
 	}
 
@@ -237,7 +237,7 @@ func main() {
 		case <-ticker.C:
 			runCycle(ctx, c)
 			sampleObserver(obs, c)
-			if err := adaptive.WriteObserverMetrics(adaptiveMetricsFile, obs); err != nil {
+			if err := adaptive.WriteAdaptiveMetrics(adaptiveMetricsFile, obs, recon); err != nil {
 				logger.Printf("WARN: adaptive metrics write: %v", err)
 			}
 		}
