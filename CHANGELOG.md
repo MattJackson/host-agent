@@ -6,6 +6,22 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-05-17
+
+### Fixed — intermittent "No data" in dashboard drive panels on busy hosts
+
+**Symptom**: on hosts with many megaraid-attached drives, the Drives stat panel in `examples/grafana/server-overview.json` flickered to "No data" roughly half the time the dashboard was refreshed, and the Temperatures timeseries showed matching gaps in per-drive lines. Only smartctl was affected — node / cadvisor / ipmi / nvidia-gpu were rock-solid in the same period.
+
+**Root cause**: smartctl_exporter 0.13.0 is synchronous — every cold scrape (cache expired) invokes smartctl serially against every enumerated device. On a 9-drive megaraid host the full scan measured ~28s (per-drive `smartctl -A` sequential total was 13.6s; the remaining ~15s is the exporter's `-x` extended-info collection + parsing per drive). vmagent's `scrape_timeout: 30s` was sitting right on top of that ceiling — measured `up{job=smartctl}` over 6h was 0.84 with `scrape_duration_seconds` p95 = max = exactly 30.001s. Scrapes that *could* have completed in ~30-40s got killed at 30s; every killed scrape inserts staleness markers in Prometheus for that target's series; instant-query panels reading those series during the staleness window return empty. With `scrape_interval: 60s` and ~16% scrape kill rate, the resulting "No data" window covered ~30-50% of dashboard refreshes — matching the "50/50" feel reported.
+
+**Fix**: raise smartctl `scrape_timeout` from `30s` to `55s` in `s6/vmagent/run`. Stays under the 60s `scrape_interval` so back-to-back scrapes don't overlap, but gives 25s of headroom over the measured cold-scan cost. Cached scrapes (~20ms) are unaffected.
+
+Hosts with few drives (e.g. typical Unraid box, single-NVMe VMs) saw no symptoms because cold scans complete well under 30s for them. The fix is universal but only heavy-drive hosts actually exercise it.
+
+### Migration
+
+Drop-in image upgrade; no config change. Watchtower picks it up on the next 5-min poll. After the new image is running, `up{job="smartctl"}` should track 1.0 ± occasional transient blips, and "No data" on the Drives panel should disappear.
+
 ## [0.3.2] — 2026-05-17
 
 ### Fixed — adaptive score functions are now satisficing, not optimizing
@@ -314,7 +330,8 @@ First public release.
 - **Server-side example compose** in `examples/server-side/` — minimal
   Prometheus + Grafana receiver to get a fresh user end-to-end in ~5 min.
 
-[Unreleased]: https://github.com/mattjackson/host-agent/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/mattjackson/host-agent/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/mattjackson/host-agent/releases/tag/v0.3.3
 [0.1.5]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.5
 [0.1.4]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.4
 [0.1.3]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.3

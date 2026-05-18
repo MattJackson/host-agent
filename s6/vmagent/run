@@ -177,7 +177,16 @@ ${IPMI_RELABEL}
 
   - job_name: smartctl
     scrape_interval: 60s
-    scrape_timeout: 30s
+    # smartctl_exporter is synchronous: a cold scrape (cache expired)
+    # invokes smartctl serially against every enumerated device. On
+    # hosts with many megaraid-attached drives the full scan can run
+    # ~25-30s, right at a 30s timeout. Scrapes that bump that ceiling
+    # get killed and Prometheus inserts staleness markers, surfacing as
+    # intermittent "No data" in instant-query dashboard panels. 55s
+    # gives ~25s headroom while staying under the 60s scrape_interval.
+    # Cached scrapes still return in <50ms; only slow cold polls feel
+    # the change.
+    scrape_timeout: 55s
     static_configs:
       - targets: ["localhost:9633"]
 
