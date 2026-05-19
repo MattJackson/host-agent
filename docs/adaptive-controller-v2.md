@@ -333,7 +333,9 @@ score = scoreMinNoise(env, stats)   // aliased
 ```
 Currently identical to `min-noise`. Eventually: replace with `estimated_total_watts(temp_distribution, fan_change_rate)` once a per-chassis fan-power model exists. Tracked as a v0.4 item.
 
-The `variance` and `fan_change_rate` terms cancel out in the reconciler's projection comparison (the synth only adjusts `TempMean` ±1, leaving variance/rate unchanged across the three scenarios). They serve only to (a) differentiate modes in `adaptive_mode_preview_score`, and (b) reserve the architectural slot for a future score-synthesizer that models PID response.
+The reconciler synth (see §10) models raising the target by Δ°C as raising observed mean by Δ°C *and* reducing PID engagement — lower variance and lower fan_change_rate — proportionally. So the `variance` and `fan_change_rate` terms do *not* cancel across the (now, up, down) projections: when observed mean is inside the band but above target, the up-projection reclaims headroom by reducing both, scoring strictly cheaper than now, and the reconciler drifts the target up to where the PID quiesces. They also (a) differentiate modes in `adaptive_mode_preview_score`, and (b) penalize fan twitchiness in the ranking term independent of band.
+
+Pre-v0.3.4 the synth adjusted only `TempMean` and these terms cancelled — adaptive went inert anywhere inside the band even when the PID was constantly fighting an arbitrary target. The v0.3.4 synth fix is what makes "balanced finds equilibrium" a real property and not an aspiration.
 
 ### Drift direction from observation
 
@@ -343,12 +345,20 @@ The reconciler periodically computes: "if I moved the target by ±1°C, would th
 ∆ = +1: try increasing target by 1°C (warmer = quieter)
 ∆ = -1: try decreasing target by 1°C (cooler = louder)
 
-For each ∆, project: what would temp distribution look like?
-  Approximation: if current_mean is 73 and target is 72, then 
-  setting target to 73 will likely settle at ~74 (proportional).
-  Use observed fan→temp gain.
+For each ∆, project what the observer would see:
+  TempMean      shifts by ∆      (PID lets equilibrium move with target)
+  TempStdDev    shifts by -|∆| * varianceReliefPerC  (less PID engagement → less jitter; ∆<0 means more jitter)
+  FanChangeRate shifts by -|∆| * fanReliefPerC       (same, in fan-output domain)
 
-Pick the ∆ that improves score. Apply if improvement is significant.
+  All shifts are first-order linear; clamped to >= 0. The reliefs
+  exist only to make in-band projections distinguishable on the
+  variance + fan-change-rate terms — they don't have to predict
+  equilibrium exactly.
+
+Pick the ∆ whose projection scores strictly lower than ScoreNow.
+Strict comparison means ties go to "settled" — the reconciler stops
+when all three projections are indistinguishable (e.g. PID is already
+quiescent).
 ```
 
 Specifics in §10.

@@ -30,6 +30,19 @@ const DefaultVarianceResetStdDev = 5.0
 // Below this, the reconciler reports "warming up" and changes nothing.
 const DefaultMinWindowFillForDrift = 1.0 // require full window per §10
 
+// varianceReliefPerC and fanReliefPerC model how much temp variance
+// and fan change rate fall (per °C of target rise) when the PID
+// engages less. These are first-order linear approximations used
+// only inside the three-projection score comparison — their job is
+// to make in-band projections distinguishable so adaptive can find
+// equilibrium. Empirically chosen from observed P4 + HDD windows:
+// ~0.3 °C of stddev and ~0.5 changes/min get reclaimed per °C of
+// target headroom.
+const (
+	varianceReliefPerC = 0.30
+	fanReliefPerC      = 0.50
+)
+
 // DriftReason classifies what the reconciler decided this cycle for a
 // given class. Used for metrics, logging, and tests.
 type DriftReason string
@@ -368,11 +381,35 @@ func (r *Reconciler) reconcileClass(class envelope.Class, now time.Time) DriftAc
 	}
 
 	// Score current + projected ±drift.
+	//
+	// Synth model: raising the target by Δ°C
+	//   - raises observed mean by Δ°C (PID lets equilibrium rise), AND
+	//   - reduces PID engagement → lower temp variance + lower fan
+	//     change rate.
+	//
+	// Modeling only the mean (as v0.3.0–v0.3.3 did) cancels the
+	// variance and fan-change-rate terms across the three projections
+	// — so once observed mean is inside the satisficing band, all
+	// three projections tie on bandViolation alone and the reconciler
+	// stays "settled" forever, even when the PID is constantly
+	// fighting the gap between target and equilibrium. Modeling the
+	// PID-engagement relief is what lets adaptive find equilibrium
+	// inside the band.
+	//
+	// Reliefs are first-order linear approximations — the synth only
+	// needs to make in-band projections distinguishable, not predict
+	// thermal equilibrium exactly. Clamped to 0 (can't reduce below
+	// already-quiescent).
 	scoreFn := r.o.Mode.Score()
+	drift := float64(r.o.DriftRatePerCycle)
 	statsUp := stats
-	statsUp.TempMean = stats.TempMean + float64(r.o.DriftRatePerCycle)
+	statsUp.TempMean = stats.TempMean + drift
+	statsUp.TempStdDev = math.Max(0, stats.TempStdDev-varianceReliefPerC*drift)
+	statsUp.FanChangeRate = math.Max(0, stats.FanChangeRate-fanReliefPerC*drift)
 	statsDown := stats
-	statsDown.TempMean = stats.TempMean - float64(r.o.DriftRatePerCycle)
+	statsDown.TempMean = stats.TempMean - drift
+	statsDown.TempStdDev = stats.TempStdDev + varianceReliefPerC*drift
+	statsDown.FanChangeRate = stats.FanChangeRate + fanReliefPerC*drift
 
 	action.ScoreNow = scoreFn(env, stats)
 	action.ScoreUp = scoreFn(env, statsUp)

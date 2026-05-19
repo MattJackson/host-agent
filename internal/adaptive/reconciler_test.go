@@ -284,6 +284,100 @@ func TestReconciler_Step_DriftUp_Toward_PreferredHigh_MinNoise(t *testing.T) {
 	}
 }
 
+// TestReconciler_Step_DriftUp_InBand_AbovetTarget_Balanced is the regression
+// test for v0.3.4. v0.3.2 made the score functions satisficing over
+// [PreferredLow, PreferredHigh], which correctly prevented the
+// "drift-out-of-band" 100%-fan incident — but left adaptive completely
+// inert anywhere inside the band, including when the PID was constantly
+// fighting the gap between target and observed equilibrium.
+//
+// Scenario: a PassiveGPU class under sustained inference load with
+// equilibrium temperature parked ~4°C above the balanced PreferredMid
+// target, but well inside the satisficing band [65, 80]. Pre-v0.3.4
+// projection synth only adjusted TempMean → variance + fan-change-rate
+// were identical across (now, up, down) projections → all three scored
+// equally → bestDelta=0 → "settled" forever. Post-fix the synth models
+// PID-engagement relief: raising target reduces variance + fan change
+// rate, which makes the up-projection strictly cheaper.
+func TestReconciler_Step_DriftUp_InBand_AbovetTarget_Balanced(t *testing.T) {
+	o := NewObserver(5, 10.0)
+	nowBase := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+
+	// PassiveGPU parked at mean=76°C with mild PID-driven jitter on both
+	// temp and fan demand — what an observer sees when the PID is
+	// constantly correcting toward a too-low target.
+	//   stddev computes to sqrt(0.8) ≈ 0.894
+	//   fan_change_rate: 4 adjacent changes over 4×30s = 2 min → 2.0/min
+	temps := []float64{75, 77, 75, 77, 76}
+	fans := []int{50, 53, 50, 53, 51}
+	for i := range temps {
+		o.Add(envelope.PassiveGPU, Sample{
+			Timestamp:    nowBase.Add(time.Duration(i) * 30 * time.Second),
+			TempCelsius:  temps[i],
+			FanDemandPct: fans[i],
+			InletCelsius: 22.0,
+		})
+	}
+
+	r, err := NewReconciler(ReconcilerOptions{
+		Observer:   o,
+		Mode:       mode.Balanced,
+		StatePath:  "",
+		WindowSize: 5,
+		Now:        func() time.Time { return nowBase.Add(time.Minute) },
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler failed: %v", err)
+	}
+
+	actions, err := r.Step()
+	if err != nil {
+		t.Fatalf("Step failed: %v", err)
+	}
+
+	// Hand-calculated expected scores (DriftRatePerCycle=1,
+	// varianceReliefPerC=0.30, fanReliefPerC=0.50):
+	//
+	//   ScoreNow  = 0 + 0.3*var(0.8) + 0.3*fcr(2.0)   = 0.84
+	//   ScoreUp   = 0 + 0.3*var(0.353) + 0.3*fcr(1.5) = 0.5559
+	//   ScoreDown = 0 + 0.3*var(1.426) + 0.3*fcr(2.5) = 1.1778
+	//
+	// ScoreUp < ScoreNow < ScoreDown → drift_up, NewTarget = 73.
+	found := false
+	for _, a := range actions {
+		if a.Class != envelope.PassiveGPU {
+			continue
+		}
+		found = true
+		if a.OldTarget != 72 {
+			t.Errorf("OldTarget=%d, want 72 (balanced/PreferredMid)", a.OldTarget)
+		}
+		if a.Reason != DriftReasonUp {
+			t.Errorf("Reason=%s, want %s. ScoreNow=%.4f ScoreUp=%.4f ScoreDown=%.4f",
+				a.Reason, DriftReasonUp, a.ScoreNow, a.ScoreUp, a.ScoreDown)
+		}
+		if a.NewTarget != 73 {
+			t.Errorf("NewTarget=%d, want 73", a.NewTarget)
+		}
+		if !(a.ScoreUp < a.ScoreNow && a.ScoreNow < a.ScoreDown) {
+			t.Errorf("score ordering broken: ScoreUp=%.4f ScoreNow=%.4f ScoreDown=%.4f (want up<now<down)",
+				a.ScoreUp, a.ScoreNow, a.ScoreDown)
+		}
+		if !floatNear(a.ScoreNow, 0.84, 0.01) {
+			t.Errorf("ScoreNow=%.4f, want ~0.84", a.ScoreNow)
+		}
+		if !floatNear(a.ScoreUp, 0.5559, 0.01) {
+			t.Errorf("ScoreUp=%.4f, want ~0.5559", a.ScoreUp)
+		}
+		if !floatNear(a.ScoreDown, 1.1778, 0.01) {
+			t.Errorf("ScoreDown=%.4f, want ~1.1778", a.ScoreDown)
+		}
+	}
+	if !found {
+		t.Fatal("no PassiveGPU action returned")
+	}
+}
+
 func TestReconciler_Step_DriftDown_Toward_PreferredLow_MaxCool(t *testing.T) {
 	o := NewObserver(5, 10.0)
 	nowBase := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)

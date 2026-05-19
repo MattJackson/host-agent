@@ -6,6 +6,29 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.3.4] — 2026-05-18
+
+### Fixed — adaptive now drifts inside the band (not just away from it)
+
+**Symptom**: on a host running sustained GPU-inference load, the passive-GPU equilibrium temperature parked 4°C above the balanced-mode initial target (76°C vs target 72°C, band [65, 80]). Adaptive never moved the target. The PID was constantly fighting a 4°C gap, so a +11°C transient on top of equilibrium (76→87°C under a workload burst) pushed the chassis fan setpoint from a baseline ~25% to a peak ~94% — loud, abrupt, and avoidable. Dashboard data showed `adaptive_target_celsius{class="passive_gpu"}` flat-line at 72 with `last_change_direction=0` for 30+ hours despite observed `p50=76, p90=77` parked above the upper deadband edge of 75.
+
+**Root cause**: the v0.3.2 satisficing score functions correctly stopped adaptive from drifting *out of* the preferred band (which had caused the v0.3.1 100%-fan incident). But the reconciler's three-projection synth only adjusted `TempMean ± DriftRatePerCycle`, leaving `TempStdDev` and `FanChangeRate` identical across the (now, up, down) projections. Inside the band `bandViolation` is 0 in all three projections, the variance + fan_change_rate terms cancel, all three projections score equally, `bestDelta = 0`, `Reason = settled` — forever. v0.3.2's own design note had described this as "the architectural slot for a future score-synthesizer that models PID response." This is that release.
+
+**Fix**: the projection synth in `internal/adaptive/reconciler.go` now models the second-order effect of a target change. Raising target by Δ°C:
+- raises observed mean by Δ°C (unchanged from v0.3.2),
+- reduces `TempStdDev` by `0.30 × Δ` (PID engages less → less jitter),
+- reduces `FanChangeRate` by `0.50 × Δ` (PID engages less → fewer fan corrections per minute).
+
+Lowering target mirrors. Both are clamped at 0. The reliefs only need to make in-band projections distinguishable on the variance + fan-change-rate terms; they don't need to predict equilibrium precisely. The envelope clamp (`[PreferredLow, PreferredHigh]`) still bounds drift, the high-variance reset still fires above `5°C` stddev, and the strict `<` comparison in `bestScore` selection means adaptive settles cleanly once both relief terms reach 0 (PID quiescent).
+
+This is **not** a regression of v0.3.2's protection. Replaying the v0.3.2 incident scenario (HDD at 37°C, target 38°C, low variance, PID adding fan every cycle): with v0.3.4's synth, adaptive now drifts target *up* toward equilibrium, reducing PID load — the opposite direction from the v0.3.1 broken behavior. Variance-reset and envelope-bound guarantees are unchanged. Soak tests and bounded-always tests pass unmodified.
+
+Regression test in `internal/adaptive/reconciler_test.go` (`TestReconciler_Step_DriftUp_InBand_AbovetTarget_Balanced`) pins the exact in-band-above-target scenario with hand-calculated scores `(0.84, 0.5559, 1.1778)` for `(ScoreNow, ScoreUp, ScoreDown)`.
+
+### Migration
+
+Drop-in image upgrade; no config change, no state schema change. Watchtower picks it up on the next 5-min poll. After the new image is running, classes whose observed mean sits well above the current target should see `adaptive_target_drifts_total{class=X,direction="up"}` start incrementing on the 10-min reconcile cadence, with target drifting up by 1°C per cycle until the PID quiesces (typically 2-6 cycles, or 20-60 min, depending on how far target sits below equilibrium).
+
 ## [0.3.3] — 2026-05-17
 
 ### Fixed — intermittent "No data" in dashboard drive panels on busy hosts
