@@ -6,6 +6,26 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.3.6] — 2026-05-21
+
+### Added — `apt-status` sub-service: pending-updates + reboot-required metrics
+
+New s6 service `apt-status` that runs hourly and emits three Prometheus gauges via the existing textfile collector:
+
+- `host_apt_updates_pending{type="all"}` — total upgradable packages on the host
+- `host_apt_updates_pending{type="security"}` — security-only subset
+- `host_reboot_required` — 1 if `/var/run/reboot-required` exists, 0 otherwise
+
+**Why**: when a fleet runs with `unattended-upgrades` disabled (so patching happens on a planned cadence with a reboot, rather than at 06:00 UTC the morning a GPU-driver postinst can't unload kernel modules cleanly), operators need a Prometheus signal to drive the patch cycle. `host_apt_updates_pending{type="security"}` ticking up is the cue to plan a window; `host_reboot_required` flipping to 1 after `apt full-upgrade` is the single best post-upgrade safety check.
+
+**How**: `chroot /host /usr/lib/update-notifier/apt-check` so the script picks up the host's `python3` + `python3-apt` + dpkg state instead of the container's Alpine rootfs. `--privileged` grants the needed `CAP_SYS_CHROOT`; nothing on the host is written, only read. Output goes to `/var/lib/host-agent/state/apt.prom` which node-exporter already serves at `:9100/metrics`.
+
+**Self-disables** on hosts that don't ship `update-notifier` (Unraid, RHEL, Alpine, …) — the rest of the host-agent stack still runs unchanged.
+
+### Migration
+
+Drop-in image upgrade; no config change, no state schema change, no new volume mounts. Watchtower picks it up on the next 5-min poll. On Debian/Ubuntu hosts the new metric will appear ~1 minute after the new image starts (first sleep is `0`, then hourly thereafter). To dashboard it, add stat panels keyed off `host_apt_updates_pending{host=~"$host",type="security"}` and `host_reboot_required{host=~"$host"}` to your Server Overview.
+
 ## [0.3.5] — 2026-05-20
 
 ### Fixed — manual fan control silently lapsed on hosts with third-party PCIe cards

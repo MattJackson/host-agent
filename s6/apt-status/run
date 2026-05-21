@@ -1,0 +1,76 @@
+#!/usr/bin/env sh
+# apt-status: emit Prometheus textfile metrics describing the host's
+# pending package updates and reboot-required state.
+#
+# Three series:
+#   host_apt_updates_pending{type="all"}      — total upgradable packages
+#   host_apt_updates_pending{type="security"} — security-only subset
+#   host_reboot_required                       — 1 if /var/run/reboot-required
+#                                                 exists on the host, else 0
+#
+# Reads through the host bind mount at /host. Self-disables on hosts
+# that don't ship Ubuntu/Debian's update-notifier (Unraid, RHEL, Alpine,
+# …) — the rest of the host-agent stack still runs.
+#
+# Implementation: `chroot /host` so apt-check picks up the host's
+# python3 + python3-apt + dpkg state instead of the container's Alpine
+# rootfs. --privileged grants CAP_SYS_CHROOT; nothing on the host is
+# written, only read.
+#
+# Output: /var/lib/host-agent/state/apt.prom — picked up by
+# node-exporter's textfile collector on the next :9100 scrape.
+
+set -eu
+
+HOST_ROOT=/host
+APT_CHECK_REL=/usr/lib/update-notifier/apt-check
+APT_CHECK="$HOST_ROOT$APT_CHECK_REL"
+REBOOT_FLAG="$HOST_ROOT/var/run/reboot-required"
+TEXTFILE_DIR=/var/lib/host-agent/state
+OUT="$TEXTFILE_DIR/apt.prom"
+TMP="$TEXTFILE_DIR/.apt.prom.tmp"
+INTERVAL=3600  # apt state changes on the timescale of hours, not seconds
+
+# If neither apt-check nor the host /var/run is reachable, nothing to do.
+if [ ! -e "$APT_CHECK" ] && [ ! -d "$HOST_ROOT/var/run" ]; then
+  echo "[apt-status] host doesn't look Debian/Ubuntu (no $APT_CHECK_REL, no /var/run) — disabling"
+  exec sleep infinity
+fi
+
+echo "[apt-status] starting — interval ${INTERVAL}s"
+mkdir -p "$TEXTFILE_DIR"
+
+while true; do
+  TOTAL=""
+  SECURITY=""
+  if [ -e "$APT_CHECK" ]; then
+    # apt-check prints "total;security" to stderr (no stdout). `|| true`
+    # so a transient apt-lock or chroot error doesn't kill the loop —
+    # we just skip emitting the updates metric this cycle.
+    RESULT=$(chroot "$HOST_ROOT" "$APT_CHECK_REL" 2>&1 || true)
+    case "$RESULT" in
+      *\;*)
+        TOTAL=${RESULT%;*}
+        SECURITY=${RESULT#*;}
+        ;;
+    esac
+  fi
+
+  REBOOT=0
+  [ -f "$REBOOT_FLAG" ] && REBOOT=1
+
+  {
+    if [ -n "$TOTAL" ] && [ -n "$SECURITY" ]; then
+      echo '# HELP host_apt_updates_pending Number of upgradable packages on the host (apt-check output).'
+      echo '# TYPE host_apt_updates_pending gauge'
+      printf 'host_apt_updates_pending{type="all"} %s\n' "$TOTAL"
+      printf 'host_apt_updates_pending{type="security"} %s\n' "$SECURITY"
+    fi
+    echo '# HELP host_reboot_required 1 if /var/run/reboot-required exists on the host, else 0. Set by kernel/initramfs/libc upgrades that require a restart to take effect.'
+    echo '# TYPE host_reboot_required gauge'
+    printf 'host_reboot_required %d\n' "$REBOOT"
+  } > "$TMP"
+  mv "$TMP" "$OUT"
+
+  sleep "$INTERVAL"
+done

@@ -77,9 +77,12 @@ The container will appear in your Prometheus on its first scrape, labeled with `
 | `smartctl_exporter`  | 9633 | always (auto-discovers)             | always |
 | `nvidia_gpu_exporter`| 9835 | `nvidia-smi` is present             | sleep |
 | `unraid-disks`       | —    | `/host/etc/unraid-version` exists   | sleep |
+| `apt-status`         | —    | host has `/usr/lib/update-notifier/apt-check` (Debian/Ubuntu) | sleep |
 | `vmagent`            | 8429 | `PROMETHEUS_REMOTE_WRITE_URL` set   | sleep |
 
 `unraid-disks` emits a textfile metric `unraid_disk_info{device,slot}` mapping Unraid's array slot labels (`disk1`, `parity`, `cache`, ...) to Linux device names by parsing `/var/local/emhttp/disks.ini`. Dashboards join on `(host, device)` to display the slot label instead of the bare `sdX` letter — matches the bay labeling in Unraid's own UI.
+
+`apt-status` runs `chroot /host /usr/lib/update-notifier/apt-check` once an hour and emits `host_apt_updates_pending{type="all"|"security"}` plus `host_reboot_required` (0/1, gated on `/var/run/reboot-required`). Useful when you've disabled `unattended-upgrades` on production hosts and want a "pending updates" panel as your planned-patch-cycle to-do list; the reboot-required flag is the single best post-upgrade safety check.
 
 `node_exporter` runs with `--collector.textfile.directory=/var/lib/host-agent/state`, so the fan controller's own state metrics (setpoint, EWMA baseline, per-class temps & targets) are emitted alongside the standard node metrics on `:9100`. The dashboard treats them as native Prometheus series.
 
