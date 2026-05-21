@@ -55,6 +55,13 @@ func (c *Client) Vendor(ctx context.Context) (string, error) {
 // EngageManual switches the BMC to manual fan control. Must be called
 // before any SetFan; otherwise the BMC overrides our SetFan with its
 // own thermal policy within ~30 seconds.
+//
+// Callers should treat this as idempotent and re-issue it every control
+// cycle. iDRAC's "third-party PCIe cooling response" silently flips the
+// BMC back to auto when a non-Dell PCIe card is present, and subsequent
+// SetFan calls become no-ops the controller cannot detect. Re-engaging
+// each cycle is the only way to keep manual control sticky on hosts
+// with third-party GPUs / HBAs.
 func (c *Client) EngageManual(ctx context.Context) error {
 	_, err := c.Runner.Run(ctx, "ipmitool", "raw", "0x30", "0x30", "0x01", "0x00")
 	return err

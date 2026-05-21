@@ -164,6 +164,12 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 	defer func() {
 		c.lastCycleDuration = int(time.Since(cycleStart).Round(time.Second).Seconds())
 	}()
+	// Re-assert manual fan control every cycle. iDRAC's third-party PCIe
+	// cooling response will silently flip the BMC back to auto (→ 100%
+	// fans) within ~30s when a non-Dell GPU/HBA is present; subsequent
+	// SetFan calls then become no-ops we cannot detect. Idempotent and
+	// cheap — one IPMI command per cycle keeps manual sticky.
+	_ = c.IPMI.EngageManual(ctx)
 	reading, ok := c.Reader.Read(ctx)
 	if !ok {
 		c.Log.Printf("Temp read failed — fans 100%% for safety")
@@ -285,10 +291,12 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 		cfg.MinFan, cfg.MaxFan,
 	)
 
-	if r.NewSpeed != c.CurrentSpeed {
-		c.CurrentSpeed = r.NewSpeed
-		_ = c.IPMI.SetFan(ctx, c.CurrentSpeed)
-	}
+	c.CurrentSpeed = r.NewSpeed
+	// Re-issue SetFan every cycle, not only on change. The BMC's
+	// revert-to-auto watchdog tracks the fan-PWM command specifically;
+	// a steady-state cycle that skips SetFan lets manual control lapse
+	// and fans run away to 100%. Idempotent — same value to same BMC.
+	_ = c.IPMI.SetFan(ctx, c.CurrentSpeed)
 
 	// Log line — match bash shape.
 	c.Log.Printf("%scpu:%d p_gpu:%d a_gpu:%d hdd:%d ssd:%d | pid c%d/p%d/h%d/s%d pf c%d/p%d/a%d/h%d/s%d ag_assist:%d → %d%%(%s) base:%s",

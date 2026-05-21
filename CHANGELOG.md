@@ -6,6 +6,33 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.3.5] — 2026-05-20
+
+### Fixed — manual fan control silently lapsed on hosts with third-party PCIe cards
+
+**Symptom**: on a Dell R730 with a non-Dell GPU installed, chassis fans drifted to 100% (~17500 RPM) at random intervals despite the controller logging modest target setpoints (e.g. `→ 32%(pg)`). Once stuck, fans stayed at full speed indefinitely until something forced manual mode back. The controller's logs gave no indication of failure — every cycle ran cleanly, recorded the computed PWM, and persisted state. The BMC was simply ignoring the SetFan commands.
+
+**Root cause**: iDRAC's "third-party PCIe cooling response" silently re-asserts auto fan mode whenever it sees a non-Dell PCIe card whose thermal table it doesn't recognize (Tesla P4, RTX A5500, third-party HBAs, etc.). The revert happens with no SEL entry and no kernel log. Once auto mode is back, the BMC ramps fans to 100% (its default "unknown thermal load" response) and every subsequent `0x30 0x30 0x02` SetFan command from us becomes a no-op — the BMC accepts the bytes but ignores the value because manual mode is no longer engaged.
+
+Two compounding bugs let this fail silently:
+
+1. **`EngageManual` was called once at startup**, never re-asserted. The function's own doc comment warned "the BMC overrides our SetFan with its own thermal policy within ~30 seconds" without preceding `EngageManual` — but main.go only called it inside the startup branch.
+2. **`SetFan` was gated on `r.NewSpeed != c.CurrentSpeed`**, so steady-state cycles (stable temps → unchanged target) issued zero IPMI commands. The BMC's revert-watchdog tracks the fan-PWM command specifically; a quiet hour of stable temps was enough to lapse manual control on every cycle path that didn't transition setpoint.
+
+Net effect: the only thing keeping fans under control was either (a) a recent transient that flipped `r.NewSpeed`, or (b) a manual `ipmitool raw 0x30 0x30 0x01 0x00` someone happened to issue. Eventually the BMC won and stayed won.
+
+**Fix**: re-assert both manual mode AND the current setpoint every cycle, not only on change.
+
+- `internal/controller/controller.go` `Cycle()`: call `IPMI.EngageManual(ctx)` at the top of every cycle (idempotent on Dell BMCs). The existing emergency / temp-read-fail / exit-emergency paths now run after a fresh manual-mode assert, so their `SetFan(100)` calls are no longer no-ops on a reverted BMC.
+- Same file: replace the conditional `if r.NewSpeed != c.CurrentSpeed { SetFan(...) }` at the bottom of the happy path with an unconditional `SetFan(c.CurrentSpeed)` every cycle. Sending the same value to the same BMC is ~10ms and keeps the revert-watchdog satisfied.
+- `internal/ipmi/ipmi.go`: extend the `EngageManual` doc comment to explain the third-party PCIe cooling response and the per-cycle re-assert contract callers must honor.
+
+The alternative (and complementary) fix is the iDRAC override flag `ipmitool raw 0x30 0xce 0x00 0x16 0x05 0x00 0x00 0x00 0x05 0x00 0x00 0x00 0x00`, which disables third-party PCIe cooling response entirely. That is a per-host one-shot operation outside the controller's scope; the in-controller fix here is universal and works without any per-host configuration.
+
+### Migration
+
+Drop-in image upgrade; no config change, no state schema change. Watchtower picks it up on the next 5-min poll. After the new image is running on an affected host, the controller's setpoint and the actual fan RPM should track each other again — visible in the `Server Overview` dashboard where the fan-RPM panel and the `host_agent_setpoint_percent` panel had previously diverged for hours at a time.
+
 ## [0.3.4] — 2026-05-18
 
 ### Fixed — adaptive now drifts inside the band (not just away from it)
