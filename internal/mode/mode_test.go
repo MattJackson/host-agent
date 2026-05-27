@@ -376,3 +376,53 @@ func TestScore_MinNoise_LowerNearPreferredHigh(t *testing.T) {
 		t.Errorf("min-noise should be lower near PreferredHigh: got %v < %v", score60, score55)
 	}
 }
+
+func TestSaturationPenalty_QuadraticAbove90(t *testing.T) {
+	cases := []struct {
+		fan, want float64
+	}{
+		{0, 0},
+		{50, 0},
+		{90, 0}, // exactly at threshold
+		{95, 25},
+		{100, 100},
+	}
+	for _, c := range cases {
+		got := saturationPenalty(c.fan)
+		if !floatNear(got, c.want, scoreTestEpsilon) {
+			t.Errorf("saturationPenalty(%v) = %v, want %v", c.fan, got, c.want)
+		}
+	}
+}
+
+func TestScore_SaturationDrivesTargetUp_AllModes(t *testing.T) {
+	// Regression test for the docker-1 "fan stuck at 100 while temp
+	// in-band" pattern. Pre-v0.3.7, mean-only scoring saw in-band temp
+	// + low variance + low fan-change-rate as "settled" — score stayed
+	// flat across up/now/down projections, no drift. With the
+	// saturation penalty + FanDemandMean projection in the synth,
+	// raising target ALWAYS scores strictly better than holding when
+	// fans are saturated. Verified per-mode because each weights the
+	// penalty differently.
+	env := envelope.DefaultEnvelopes[envelope.PassiveGPU]
+
+	// Saturated state: in-band, low variance, fan pinned near MaxFan.
+	statsNow := WindowStats{
+		TempMean: 78, TempStdDev: 1.0, FanChangeRate: 0.5, FanDemandMean: 98,
+	}
+	// Synth "up by 1°C": mean shifts up, fan demand drops.
+	statsUp := WindowStats{
+		TempMean: 79, TempStdDev: 0.7, FanChangeRate: 0, FanDemandMean: 93,
+	}
+
+	for _, m := range []Mode{Balanced, MinNoise, Eco} {
+		t.Run(string(m), func(t *testing.T) {
+			scorer := m.Score()
+			now := scorer(env, statsNow)
+			up := scorer(env, statsUp)
+			if !(up < now) {
+				t.Errorf("%s: under saturation, raising target should score lower; got up=%v now=%v", m, up, now)
+			}
+		})
+	}
+}

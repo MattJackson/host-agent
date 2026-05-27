@@ -85,6 +85,41 @@ func TestStepPID_AsymmetricDeadband_AboveTargetAlwaysSteps(t *testing.T) {
 	}
 }
 
+func TestStepPID_SaturationEscape(t *testing.T) {
+	// Matches the docker-1 P4 pathology that motivated this branch:
+	// target=72, observed equilibrium=78 under sustained load, fan
+	// pinned at MaxFan=100 with temp not rising. Pre-fix, candidate
+	// stayed clamped at 100 indefinitely. Post-fix, drifts down to
+	// probe whether less fan also holds equilibrium.
+	cases := []struct {
+		name                                  string
+		temp, lastTemp, target, current, want int
+	}{
+		// dTemp=0 (stable above target at MaxFan): escape down by drift rate.
+		{"at MaxFan, error +6, dTemp=0 — escape", 78, 78, 72, 100, 97},
+		// dTemp<0 (cooling at MaxFan): escape down.
+		{"at MaxFan, error +6, dTemp=-1 — escape", 78, 79, 72, 100, 97},
+		// dTemp>0 (still climbing): NO escape, normal P+D step (clamped).
+		{"at MaxFan, error +6, dTemp=+1 — no escape, climbing", 78, 77, 72, 100, 100},
+		// Not at MaxFan: no escape, normal P+D applies.
+		{"below MaxFan, error +6, dTemp=0 — no escape", 78, 78, 72, 95, 98},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := PIDParams{
+				Temp: c.temp, Target: c.target, Deadband: 2,
+				LastTemp: c.lastTemp, CurrentSpeed: c.current,
+				MinFan: 20, MaxFan: 100,
+				FanGain: 0.5, DerivativeGain: 1.0,
+				DeadbandDriftRate: 3,
+			}
+			if got := StepPID(p); got != c.want {
+				t.Errorf("got %d want %d", got, c.want)
+			}
+		})
+	}
+}
+
 func TestStepPID_HighError_FullPIDStep(t *testing.T) {
 	// 10°C over target, rising 5°C/cycle.
 	// step = 10*0.5 + 5*1.0 = 10 → cand = 60+10 = 70.

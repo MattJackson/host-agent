@@ -43,6 +43,23 @@ const (
 	fanReliefPerC      = 0.50
 )
 
+// fanDemandReliefPerC: how much FanDemandMean (in %) falls per °C
+// of target rise. Without this projection the score functions'
+// saturation penalty term (mode.saturationPenalty) ties across all
+// three up/now/down projections — drift gradient is zero on that
+// term and the reconciler stays settled even when fan is pinned at
+// MaxFan. With it, raising target visibly reduces predicted fan
+// demand and the saturation penalty becomes the dominant signal
+// during saturation episodes.
+//
+// 5%/°C is empirical: near saturation each degree of error contributes
+// roughly P*error% = 0.5%/°C of static fan, plus a few % of dynamic
+// PID engagement that disappears when error closes. Conservative
+// estimate — overshooting here would cause the reconciler to drift
+// target too eagerly on transient saturation; undershooting just
+// makes drift slower.
+const fanDemandReliefPerC = 5.0
+
 // DriftReason classifies what the reconciler decided this cycle for a
 // given class. Used for metrics, logging, and tests.
 type DriftReason string
@@ -406,10 +423,12 @@ func (r *Reconciler) reconcileClass(class envelope.Class, now time.Time) DriftAc
 	statsUp.TempMean = stats.TempMean + drift
 	statsUp.TempStdDev = math.Max(0, stats.TempStdDev-varianceReliefPerC*drift)
 	statsUp.FanChangeRate = math.Max(0, stats.FanChangeRate-fanReliefPerC*drift)
+	statsUp.FanDemandMean = math.Max(0, stats.FanDemandMean-fanDemandReliefPerC*drift)
 	statsDown := stats
 	statsDown.TempMean = stats.TempMean - drift
 	statsDown.TempStdDev = stats.TempStdDev + varianceReliefPerC*drift
 	statsDown.FanChangeRate = stats.FanChangeRate + fanReliefPerC*drift
+	statsDown.FanDemandMean = math.Min(100, stats.FanDemandMean+fanDemandReliefPerC*drift)
 
 	action.ScoreNow = scoreFn(env, stats)
 	action.ScoreUp = scoreFn(env, statsUp)

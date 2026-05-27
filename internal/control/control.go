@@ -72,6 +72,34 @@ func StepPID(p PIDParams) int {
 		return cand
 	}
 
+	// Saturation escape: error > 0 AND already at MaxFan AND temp not
+	// rising means the PID has nowhere to step (positive P+D would
+	// clamp to MaxFan, which is a no-op). Without this branch the
+	// candidate stays pinned at MaxFan indefinitely even after load
+	// eases, because there's never a cycle that explores "would less
+	// fan still hold this equilibrium?". P4 under sustained 95% util
+	// equilibrates at ~78°C with chassis fans at 100; target=72 yields
+	// error=+6 forever and the controller has no way to learn the
+	// equilibrium is actually achievable at fan=85.
+	//
+	// Drift down by DeadbandDriftRate to probe. If load is genuinely
+	// near max cooling capacity the next cycle's P+D step will push
+	// back up (dTemp goes positive as fan eases) — self-correcting.
+	// The non-rising gate (dTemp <= 0) keeps a real climbing transient
+	// from triggering the escape and undoing legitimate ramping.
+	//
+	// The escape also unblocks the adaptive layer: observed
+	// FanDemandMean drops off 100, which makes the reconciler's
+	// saturation penalty visible across the up/down projections so
+	// target drifts up toward the achievable equilibrium.
+	if error > 0 && p.CurrentSpeed >= p.MaxFan && dTemp <= 0 {
+		cand := p.CurrentSpeed - p.DeadbandDriftRate
+		if cand < p.MinFan {
+			cand = p.MinFan
+		}
+		return cand
+	}
+
 	// step = e*P + d*D, rounded half-away-from-zero.
 	stepF := float64(error)*p.FanGain + float64(dTemp)*p.DerivativeGain
 	step := roundHalfAway(stepF)

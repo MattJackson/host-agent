@@ -121,26 +121,52 @@ func (m Mode) Score() ScoreFunc {
 // sat anywhere off PreferredMid — even when temp was well within safe
 // operating range.
 
+// saturationPenalty grows quadratically above 90% mean fan demand:
+// 0 at ≤90, 25 at 95, 100 at 100. A fan stuck near MaxFan is the
+// worst observable state regardless of how "settled" temp looks on
+// the variance/fan-change-rate terms — those go LOW under sustained
+// saturation because the output is pinned, not because the system is
+// happy. Pre-v0.3.7 the score functions were blind to this: a P4
+// running 78°C in-band with chassis fans pinned at 100 scored
+// identically to one at 78°C with fans cruising at 40, so adaptive
+// never drifted target up to a fan-relieving point. Penalty weight
+// varies per mode (max-cool tolerates saturation by intent; min-noise
+// abhors it).
+func saturationPenalty(fanDemandMean float64) float64 {
+	excess := math.Max(0, fanDemandMean-90.0) / 10.0
+	return excess * excess * 100.0
+}
+
 func scoreMaxCool(env envelope.Envelope, s WindowStats) float64 {
 	// Lean toward PreferredLow. Score grows linearly above PreferredLow;
 	// below it (the box is already as cool as max-cool wants), score
 	// reduces to variance only so projections settle.
+	//
+	// Saturation penalty has weight 1.0 — max-cool tolerates saturation
+	// somewhat (the intent IS maximum cooling) but a sustained 100%
+	// fan above PreferredLow is the signal that PreferredLow is
+	// unachievable for current load. Small nudge upward beats spinning
+	// at MaxFan forever.
 	aboveLow := math.Max(0, s.TempMean-float64(env.PreferredLow))
 	variance := s.TempStdDev * s.TempStdDev
-	return aboveLow + 0.5*variance
+	return aboveLow + 0.5*variance + 1.0*saturationPenalty(s.FanDemandMean)
 }
 
 func scoreBalanced(env envelope.Envelope, s WindowStats) float64 {
 	// Satisficing: any temp inside [PreferredLow, PreferredHigh] is
 	// equally fine. Outside the band, penalize distance. This keeps
 	// adaptive from chasing in-band drift that would push the PID into
-	// saturation for no thermal benefit. The variance + fan-change-rate
-	// terms cancel in the reconciler's projection comparison (synth
-	// only adjusts TempMean) and contribute only to ranking modes
-	// against each other in the preview score.
+	// saturation for no thermal benefit.
+	//
+	// Saturation penalty (weight 5.0): at FanDemandMean=95 the penalty
+	// is 125 — dominant over a ±1°C bandViolation — so any sustained
+	// fan saturation drives target up regardless of where mean sits in
+	// the band. This is the bugfix for the "fan stuck at 100 while
+	// temp is comfortably at 78" pattern, where mean-only scoring saw
+	// "in-band, low variance, low fan-change" and reported "settled".
 	bandViolation := bandDistance(s.TempMean, float64(env.PreferredLow), float64(env.PreferredHigh))
 	variance := s.TempStdDev * s.TempStdDev
-	return bandViolation + 0.3*variance + 0.3*s.FanChangeRate
+	return bandViolation + 0.3*variance + 0.3*s.FanChangeRate + 5.0*saturationPenalty(s.FanDemandMean)
 }
 
 func scoreMinNoise(env envelope.Envelope, s WindowStats) float64 {
@@ -149,10 +175,15 @@ func scoreMinNoise(env envelope.Envelope, s WindowStats) float64 {
 	// above it. Below PreferredLow is unusual in min-noise — the box
 	// is so cool there's nothing to do — and contributes only via
 	// variance.
+	//
+	// Saturation penalty (weight 10.0): min-noise is the explicit
+	// opposite of saturation — heavy weight forces target as high as
+	// envelope allows when fans are pinned. A min-noise host should
+	// never sit at 100% fan; if it does, target is wrong.
 	belowHigh := math.Max(0, float64(env.PreferredHigh)-s.TempMean)
 	aboveHigh := math.Max(0, s.TempMean-float64(env.PreferredHigh))
 	variance := s.TempStdDev * s.TempStdDev
-	return belowHigh + 5.0*aboveHigh + 2.0*s.FanChangeRate + 0.5*variance
+	return belowHigh + 5.0*aboveHigh + 2.0*s.FanChangeRate + 0.5*variance + 10.0*saturationPenalty(s.FanDemandMean)
 }
 
 func scoreEco(env envelope.Envelope, s WindowStats) float64 {

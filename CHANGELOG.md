@@ -6,6 +6,39 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.3.7] — 2026-05-27
+
+### Fixed — fans stuck at 100% under sustained GPU load even after temp settled in-band
+
+**Symptom**: on a Dell R730xd with a Tesla P4, any GPU utilization spike to ≥95% drove chassis fans to 100% within ~30s — expected — but fans then *stayed* pinned at 100% for the entire load duration even after die temp stabilized at 76–79°C, well inside the envelope's preferred band (passive_GPU PreferredHigh=80) and 6–9°C below MaxSafe. Captured via 1-min trace on docker-1 (2026-05-27 13:30–15:07): fan setpoint hit 100% at 13:32 with temp=84°C, dropped to and held 76–79°C from 13:36 onward, and fan stayed at 100% for the next 90+ minutes. `adaptive_target_celsius{class="passive_gpu"}` crept from 72→74 over the same window — the reconciler was nominally trying to do the right thing but at less than 1°C per 10-min cycle.
+
+**Root cause**: three independent blind spots compounded into a stuck-at-MaxFan failure mode.
+
+1. **`internal/control/control.go:StepPID` had no downward path when `error > 0`.** The asymmetric deadband branch only fires for `error <= 0`. Above target, the function always computes `cand = current_speed + positive_step` and returns `clamp(cand, MinFan, MaxFan)`. When `current_speed` already equals `MaxFan`, every cycle's positive step is a no-op clamp; the controller has no mechanism to probe "would less fan also hold this equilibrium?" — even when the real answer is yes.
+
+2. **All four mode score functions in `internal/mode/mode.go` ignored `WindowStats.FanDemandMean`.** A fan saturated at 100% for the whole observation window scores near-zero on `TempStdDev` (output pinned → no jitter) and `FanChangeRate` (no changes to count). With `TempMean` inside `[PreferredLow, PreferredHigh]`, `scoreBalanced` returned `0 + 0.3·variance + 0.3·fanChange` — effectively zero — and the reconciler logged "settled." Saturation, the single most important failure mode the adaptive layer should self-correct, was structurally invisible.
+
+3. **The reconciler's three-projection synth didn't project `FanDemandMean`.** `reconcileClass` synthesizes `statsUp`/`statsDown` by shifting `TempMean ± drift`, with `TempStdDev` and `FanChangeRate` relieved by per-degree empirical constants (v0.3.4). Adding a saturation term to the score would have been a no-op without a matching projection — `FanDemandMean` would be identical across now/up/down, the saturation penalty would cancel, drift gradient would still be zero.
+
+**Fix**: three targeted, mutually-reinforcing changes.
+
+- `internal/control/control.go` `StepPID`: new saturation-escape branch — when `error > 0 && CurrentSpeed >= MaxFan && dTemp <= 0`, drift the candidate down by `DeadbandDriftRate` instead of computing a clamped positive step. Self-correcting: if load is genuinely near max cooling capacity, the next cycle's P+D step pushes back up (`dTemp` goes positive as fan eases). The non-rising gate (`dTemp <= 0`) keeps real climbing transients from triggering the escape during legitimate ramping. Worst-case behavior is small oscillation near MaxFan; best case is convergence to the minimum fan that holds the load's equilibrium, with adaptive then drifting the target up to that equilibrium so error closes and normal deadband logic takes over.
+- `internal/mode/mode.go`: new `saturationPenalty(fanDemandMean)` — quadratic above 90% (0 at ≤90, 25 at 95, 100 at 100). Added to all four score functions with mode-appropriate weights: `max-cool=1.0` (tolerates saturation by intent), `balanced=5.0` (saturation is anti-balanced), `min-noise=10.0` and `eco=10.0` (saturation is the literal opposite of intent).
+- `internal/adaptive/reconciler.go`: new `fanDemandReliefPerC = 5.0` constant, with `statsUp.FanDemandMean = max(0, mean − 5·drift)` and `statsDown.FanDemandMean = min(100, mean + 5·drift)` in the synth. This makes the new saturation term distinguishable across projections; under saturation, the up-projection scores strictly lower and the reconciler drifts target toward `PreferredHigh` (or wherever fan demand falls below the saturation knee), rather than logging "settled" forever.
+
+Replaying the docker-1 trace against the new score functions: at the saturated state (`mean=78, stddev=1.0, fanChange=0.5, fanDemand=98`), `scoreBalanced` is `5·64 = 320` instead of `~0.5`; the up-projection (`mean=79, stddev=0.7, fanChange=0, fanDemand=93`) scores `5·9 = 45`. Strict-better, so the reconciler drifts target up. After one drift to 75, observed fan demand falls toward the 90 knee on the next window; after two more drifts (target=77) the saturation term collapses to 0 and normal in-band scoring resumes — typically 20–30 min to escape saturation vs. the prior 60+ min plus permanent oscillation.
+
+**Envelope intentionally unchanged**: `PassiveGPU.PreferredMid=72` is correct for cards at light or burst load (most fleet time); the bug only surfaces under sustained heavy load where the v2 adaptive layer is supposed to drift up on its own. The right answer is to fix the saturation blindness in the adaptive layer (this release) rather than redefine "balanced" for every host based on a worst-case load assumption.
+
+Regression tests:
+- `internal/control/control_test.go::TestStepPID_SaturationEscape` — pins the docker-1 pathology directly (target=72, temp=78, fan=100, dTemp=0 → escape to 97) plus the three non-firing branches (rising temp, below-MaxFan, etc.) so the fix can't silently regress to monotonic-up-or-clamp.
+- `internal/mode/mode_test.go::TestSaturationPenalty_QuadraticAbove90` — pins the penalty curve at five points.
+- `internal/mode/mode_test.go::TestScore_SaturationDrivesTargetUp_AllModes` — for `balanced`/`min-noise`/`eco`, under saturated-in-band stats the up-projection scores strictly lower than holding. `max-cool` is intentionally excluded — its weight is small enough that variance can dominate in pathological inputs, which matches the intent.
+
+### Migration
+
+Drop-in image upgrade; no config change, no state schema change, no new env vars. Watchtower picks it up on the next 5-min poll. After the new image is running on a host that's currently saturating, expect `adaptive_target_celsius` to drift up by 1°C per 10-min reconcile cycle until either `FanDemandMean` falls below ~93 (penalty knee) or target reaches `PreferredHigh`. Concurrent with that, the control layer will start oscillating fan by ~3% near `MaxFan` (visible in the `host_agent_setpoint_percent` panel) until adaptive catches up and error closes — that oscillation is the saturation escape working as intended and disappears once normal deadband logic re-engages.
+
 ## [0.3.6] — 2026-05-21
 
 ### Added — `apt-status` sub-service: pending-updates + reboot-required metrics
