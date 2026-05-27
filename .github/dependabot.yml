@@ -1,0 +1,26 @@
+# Dependabot keeps GitHub Actions and the Dockerfile base image fresh.
+# Deliberately NO gomod ecosystem: this project has zero external Go
+# dependencies (stdlib only, no go.sum) and intends to keep it that way
+# — see CONTRIBUTING.md. If a Go dep ever lands, add a gomod block.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps
+    groups:
+      actions:
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps
+    groups:
+      docker:
+        update-types: [minor, patch]

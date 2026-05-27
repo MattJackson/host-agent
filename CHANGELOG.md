@@ -433,11 +433,20 @@ First public release.
 - **Server-side example compose** in `examples/server-side/` — minimal
   Prometheus + Grafana receiver to get a fresh user end-to-end in ~5 min.
 
-[Unreleased]: https://github.com/mattjackson/host-agent/compare/v0.3.3...HEAD
-[0.3.3]: https://github.com/mattjackson/host-agent/releases/tag/v0.3.3
-[0.1.5]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.5
-[0.1.4]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.4
-[0.1.3]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.3
-[0.1.2]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.2
-[0.1.1]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.1
-[0.1.0]: https://github.com/mattjackson/host-agent/releases/tag/v0.1.0
+[Unreleased]: https://github.com/MattJackson/host-agent/compare/v0.3.7...HEAD
+[0.3.7]: https://github.com/MattJackson/host-agent/releases/tag/v0.3.7
+[0.3.6]: https://github.com/MattJackson/host-agent/releases/tag/v0.3.6
+[0.3.5]: https://github.com/MattJackson/host-agent/releases/tag/v0.3.5
+[0.3.4]: https://github.com/MattJackson/host-agent/releases/tag/v0.3.4
+[0.3.3]: https://github.com/MattJackson/host-agent/releases/tag/v0.3.3
+[0.3.2]: https://github.com/MattJackson/host-agent/releases/tag/v0.3.2
+[0.3.1]: https://github.com/MattJackson/host-agent/releases/tag/v0.3.1
+[0.3.0]: https://github.com/MattJackson/host-agent/releases/tag/v0.3.0
+[0.2.1]: https://github.com/MattJackson/host-agent/releases/tag/v0.2.1
+[0.2.0]: https://github.com/MattJackson/host-agent/releases/tag/v0.2.0
+[0.1.5]: https://github.com/MattJackson/host-agent/releases/tag/v0.1.5
+[0.1.4]: https://github.com/MattJackson/host-agent/releases/tag/v0.1.4
+[0.1.3]: https://github.com/MattJackson/host-agent/releases/tag/v0.1.3
+[0.1.2]: https://github.com/MattJackson/host-agent/releases/tag/v0.1.2
+[0.1.1]: https://github.com/MattJackson/host-agent/releases/tag/v0.1.1
+[0.1.0]: https://github.com/MattJackson/host-agent/releases/tag/v0.1.0

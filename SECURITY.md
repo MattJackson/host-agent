@@ -15,7 +15,7 @@ commands, etc.). Please treat them accordingly.
 **Do not open a public GitHub issue for a vulnerability.** Use GitHub
 Security Advisories instead:
 
-→ <https://github.com/mattjackson/host-agent/security/advisories/new>
+→ <https://github.com/MattJackson/host-agent/security/advisories/new>
 
 This routes the report privately to the maintainers, gives us a place
 to coordinate a fix, and gets you a CVE if one's warranted.

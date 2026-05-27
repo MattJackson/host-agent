@@ -1,0 +1,41 @@
+# Categorizes the auto-generated release notes GitHub renders on the
+# Releases page (e.g. when "Generate release notes" is clicked or when
+# a release is published without a body). PRs are bucketed by label;
+# anything without a matched label falls into "Other changes".
+#
+# Dependabot PRs are excluded from the visible notes so dependency
+# bumps stay out of user-facing changelogs — they show up under the
+# CHANGELOG.md "Internals" sections for releases that include them.
+
+changelog:
+  exclude:
+    authors:
+      - dependabot
+      - dependabot[bot]
+
+  categories:
+    - title: Breaking changes
+      labels:
+        - breaking
+    - title: New features
+      labels:
+        - feature
+        - enhancement
+    - title: Bug fixes
+      labels:
+        - bug
+        - fix
+    - title: Chassis profiles
+      labels:
+        - chassis-profile
+    - title: Documentation
+      labels:
+        - docs
+    - title: Internals
+      labels:
+        - ci
+        - dependencies
+        - refactor
+    - title: Other changes
+      labels:
+        - "*"

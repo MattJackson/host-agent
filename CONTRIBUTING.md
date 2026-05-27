@@ -40,7 +40,7 @@ opening anything substantial.
 You need Go 1.23+ and Docker. No other tooling.
 
 ```sh
-git clone https://github.com/mattjackson/host-agent
+git clone https://github.com/MattJackson/host-agent
 cd host-agent
 go test ./...                          # unit + e2e (no Docker needed)
 docker build -t host-agent:dev .       # full image build

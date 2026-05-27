@@ -1,0 +1,6 @@
+# GitHub uses this file to auto-request review from the listed owners
+# whenever a PR touches a matching path. Single-maintainer project, so
+# everything routes to @MattJackson — keep the file this simple until
+# there's a reason not to.
+
+* @MattJackson
