@@ -14,7 +14,7 @@ import (
 // Soak tests exercise the Reconciler over many cycles with scripted
 // thermal traces. They verify properties stated in design §10:
 //
-//  - bounded: target never escapes [PreferredLow, PreferredHigh]
+//  - bounded: target never escapes [PreferredLow, MaxSafe-1]
 //  - monotonic-toward-equilibrium under stable inputs (no oscillation)
 //  - reset-on-flap: high variance triggers DriftReasonVarianceReset
 //  - tracks env change: target follows when steady-state temp shifts
@@ -150,8 +150,8 @@ func TestSoak_CoolStableTemps_ConvergesAtPreferredLow_MaxCool(t *testing.T) {
 	}
 
 	for i, tgt := range targets {
-		if tgt < env.PreferredLow || tgt > env.PreferredHigh {
-			t.Errorf("step %d: target=%d outside [PreferredLow=%d, PreferredHigh=%d]", i, tgt, env.PreferredLow, env.PreferredHigh)
+		if tgt < env.PreferredLow || tgt > env.MaxSafe-1 {
+			t.Errorf("step %d: target=%d outside [PreferredLow=%d, MaxSafe-1=%d]", i, tgt, env.PreferredLow, env.MaxSafe-1)
 		}
 	}
 
@@ -168,10 +168,16 @@ func TestSoak_CoolStableTemps_ConvergesAtPreferredLow_MaxCool(t *testing.T) {
 	}
 }
 
-// TestSoak_WarmStableTemps_ConvergesAtPreferredHigh_MinNoise tests that in MinNoise
-// mode with stable temps below PreferredHigh, the target drifts up to PreferredHigh
-// and stays there (bounded_high). This verifies design §10 convergence property.
-func TestSoak_WarmStableTemps_ConvergesAtPreferredHigh_MinNoise(t *testing.T) {
+// TestSoak_WarmStableTemps_ConvergesAtCeiling_MinNoise tests that in MinNoise
+// mode with stable temps below PreferredHigh, the target drifts up to the
+// new high clamp (MaxSafe-1) and stays there. Pre-v0.3.8 the clamp was
+// PreferredHigh; post-v0.3.8 it's MaxSafe-1 so the saturation-penalty
+// signal can actually move target into the safety headroom.
+//
+// Note: the test artificially holds observed mean fixed; in production
+// the PID loop couples mean to target so equilibrium settles below the
+// ceiling. This test verifies the clamp, not the steady-state.
+func TestSoak_WarmStableTemps_ConvergesAtCeiling_MinNoise(t *testing.T) {
 	tr := soakTrace{
 		Class:          envelope.CPU,
 		Mode:           mode.MinNoise,
@@ -202,16 +208,16 @@ func TestSoak_WarmStableTemps_ConvergesAtPreferredHigh_MinNoise(t *testing.T) {
 	}
 
 	env := envelope.DefaultEnvelopes[envelope.CPU]
-	expectedHigh := env.PreferredHigh // 75
+	expectedCeiling := env.MaxSafe - 1 // 84
 
 	finalTarget := targets[len(targets)-1]
-	if finalTarget != expectedHigh {
-		t.Errorf("final target=%d, expected PreferredHigh=%d", finalTarget, expectedHigh)
+	if finalTarget != expectedCeiling {
+		t.Errorf("final target=%d, expected ceiling=MaxSafe-1=%d", finalTarget, expectedCeiling)
 	}
 
 	for i, tgt := range targets {
-		if tgt < env.PreferredLow || tgt > env.PreferredHigh {
-			t.Errorf("step %d: target=%d outside [PreferredLow=%d, PreferredHigh=%d]", i, tgt, env.PreferredLow, env.PreferredHigh)
+		if tgt < env.PreferredLow || tgt > env.MaxSafe-1 {
+			t.Errorf("step %d: target=%d outside [PreferredLow=%d, MaxSafe-1=%d]", i, tgt, env.PreferredLow, env.MaxSafe-1)
 		}
 	}
 
@@ -280,14 +286,14 @@ func TestSoak_LoadStep_TargetTracksUp(t *testing.T) {
 	}
 
 	endTarget := targets[len(targets)-1]
-	expectedNewEq := 43 // PreferredHigh for HDD - ceiling should be reached
+	expectedNewEq := env.MaxSafe - 1 // 44 for HDD — new ceiling post-v0.3.8
 	if math.Abs(float64(endTarget-expectedNewEq)) > 2 {
-		t.Errorf("end target=%d, expected within 2°C of %d (PreferredHigh)", endTarget, expectedNewEq)
+		t.Errorf("end target=%d, expected within 2°C of %d (MaxSafe-1)", endTarget, expectedNewEq)
 	}
 
 	for i, tgt := range targets {
-		if tgt < env.PreferredLow || tgt > env.PreferredHigh {
-			t.Errorf("step %d: target=%d outside [PreferredLow=%d, PreferredHigh=%d]", i, tgt, env.PreferredLow, env.PreferredHigh)
+		if tgt < env.PreferredLow || tgt > env.MaxSafe-1 {
+			t.Errorf("step %d: target=%d outside [PreferredLow=%d, MaxSafe-1=%d]", i, tgt, env.PreferredLow, env.MaxSafe-1)
 		}
 	}
 
@@ -304,10 +310,10 @@ func TestSoak_LoadStep_TargetTracksUp(t *testing.T) {
 		t.Logf("upward drift count=%d (target moving toward PreferredHigh)", upwardDriftCount)
 	}
 
-	// Verify target reaches ceiling by mid-run
+	// Verify target reaches the new ceiling (MaxSafe-1) by mid-run.
 	ceilingReached := false
 	for i, tgt := range targets {
-		if tgt == env.PreferredHigh && i > len(targets)/4 {
+		if tgt == env.MaxSafe-1 && i > len(targets)/4 {
 			ceilingReached = true
 			break
 		}
@@ -387,8 +393,8 @@ func TestSoak_HighVariance_TriggersResetThenStabilizes(t *testing.T) {
 
 	env := envelope.DefaultEnvelopes[envelope.CPU]
 	for _, a := range stableHistory {
-		if a.NewTarget < env.PreferredLow || a.NewTarget > env.PreferredHigh {
-			t.Errorf("stable phase: target=%d outside [PreferredLow=%d, PreferredHigh=%d]", a.NewTarget, env.PreferredLow, env.PreferredHigh)
+		if a.NewTarget < env.PreferredLow || a.NewTarget > env.MaxSafe-1 {
+			t.Errorf("stable phase: target=%d outside [PreferredLow=%d, MaxSafe-1=%d]", a.NewTarget, env.PreferredLow, env.MaxSafe-1)
 		}
 
 		validReasons := map[DriftReason]bool{
@@ -401,8 +407,8 @@ func TestSoak_HighVariance_TriggersResetThenStabilizes(t *testing.T) {
 	}
 
 	finalTarget := stableHistory[len(stableHistory)-1].NewTarget
-	if finalTarget < env.PreferredLow || finalTarget > env.PreferredHigh {
-		t.Errorf("final target in stable phase=%d outside [PreferredLow=%d, PreferredHigh=%d]", finalTarget, env.PreferredLow, env.PreferredHigh)
+	if finalTarget < env.PreferredLow || finalTarget > env.MaxSafe-1 {
+		t.Errorf("final target in stable phase=%d outside [PreferredLow=%d, MaxSafe-1=%d]", finalTarget, env.PreferredLow, env.MaxSafe-1)
 	}
 }
 
@@ -459,14 +465,14 @@ func TestSoak_Convergence_TargetMonotonicAfterWarmup(t *testing.T) {
 	}
 
 	for i, tgt := range targets {
-		if tgt < env.PreferredLow || tgt > env.PreferredHigh {
-			t.Errorf("step %d: target=%d outside [PreferredLow=%d, PreferredHigh=%d]", i, tgt, env.PreferredLow, env.PreferredHigh)
+		if tgt < env.PreferredLow || tgt > env.MaxSafe-1 {
+			t.Errorf("step %d: target=%d outside [PreferredLow=%d, MaxSafe-1=%d]", i, tgt, env.PreferredLow, env.MaxSafe-1)
 		}
 	}
 }
 
 // TestSoak_BoundedAlways_NeverEscapesPreferredRange tests that across all
-// DriftActions, the target never escapes [PreferredLow, PreferredHigh]. This
+// DriftActions, the target never escapes [PreferredLow, MaxSafe-1]. This
 // verifies design §12 hard guarantee: bounded.
 func TestSoak_BoundedAlways_NeverEscapesPreferredRange(t *testing.T) {
 	tr := soakTrace{
@@ -503,22 +509,22 @@ func TestSoak_BoundedAlways_NeverEscapesPreferredRange(t *testing.T) {
 		if a.NewTarget < env.PreferredLow {
 			t.Errorf("step %d: target=%d below PreferredLow=%d", i, a.NewTarget, env.PreferredLow)
 		}
-		if a.NewTarget > env.PreferredHigh {
-			t.Errorf("step %d: target=%d above PreferredHigh=%d", i, a.NewTarget, env.PreferredHigh)
+		if a.NewTarget > env.MaxSafe-1 {
+			t.Errorf("step %d: target=%d above MaxSafe-1=%d", i, a.NewTarget, env.MaxSafe-1)
 		}
 	}
 
 	allWithinBounds := true
 	for _, a := range history {
-		if a.NewTarget < env.PreferredLow || a.NewTarget > env.PreferredHigh {
+		if a.NewTarget < env.PreferredLow || a.NewTarget > env.MaxSafe-1 {
 			allWithinBounds = false
 			break
 		}
 	}
 
 	if !allWithinBounds {
-		t.Error("target escaped [PreferredLow, PreferredHigh] bounds")
+		t.Error("target escaped [PreferredLow, MaxSafe-1] bounds")
 	} else {
-		t.Log("all targets stayed within [PreferredLow, PreferredHigh]")
+		t.Log("all targets stayed within [PreferredLow, MaxSafe-1]")
 	}
 }

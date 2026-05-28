@@ -234,11 +234,13 @@ func TestReconciler_Step_HighVariance_ResetsToInitial(t *testing.T) {
 	}
 }
 
-func TestReconciler_Step_DriftUp_Toward_PreferredHigh_MinNoise(t *testing.T) {
+func TestReconciler_Step_DriftUp_Toward_MaxSafe_MinNoise(t *testing.T) {
 	o := NewObserver(5, 10.0)
 	nowBase := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
 
-	// HDD with stable temps at mean=35 (PreferredHigh=43, headroom=8)
+	// HDD with stable temps at mean=35. MinNoise initial target = PreferredHigh = 43,
+	// new high clamp = MaxSafe-1 = 44 (post-v0.3.8). Mean below PreferredHigh
+	// means belowHigh > 0 in scoreMinNoise → score prefers up-projection.
 	for i := 0; i < 5; i++ {
 		o.Add(envelope.HDD, Sample{
 			Timestamp:    nowBase.Add(time.Duration(i) * 30 * time.Second),
@@ -268,17 +270,14 @@ func TestReconciler_Step_DriftUp_Toward_PreferredHigh_MinNoise(t *testing.T) {
 
 	for _, a := range actions {
 		if a.Class == envelope.HDD {
-			// MinNoise mode sets HDD target to PreferredHigh=43, mean is 35.2
-			// Score down (warmer) should be better than score now or up
-			// But target is already at PreferredHigh so bounded_high
 			if a.Reason != DriftReasonUp && a.Reason != DriftReasonSettled && a.Reason != DriftReasonBoundedHigh {
 				t.Errorf("class HDD: expected reason=up/settled/bounded_high, got %s", a.Reason)
 			}
 			if a.OldTarget != expectedInitialTarget {
 				t.Errorf("class HDD: initial target=%d, got %d", expectedInitialTarget, a.OldTarget)
 			}
-			if a.NewTarget > env.PreferredHigh {
-				t.Errorf("class HDD: NewTarget=%d exceeds PreferredHigh=%d", a.NewTarget, env.PreferredHigh)
+			if a.NewTarget > env.MaxSafe-1 {
+				t.Errorf("class HDD: NewTarget=%d exceeds MaxSafe-1=%d", a.NewTarget, env.MaxSafe-1)
 			}
 		}
 	}
@@ -478,9 +477,141 @@ func TestReconciler_Step_BoundedHigh(t *testing.T) {
 			if a.OldTarget != targetAtHigh {
 				t.Errorf("class CPU: initial target=%d, got %d", targetAtHigh, a.OldTarget)
 			}
-			if a.NewTarget > env.PreferredHigh {
-				t.Errorf("class CPU: NewTarget=%d exceeds PreferredHigh=%d", a.NewTarget, env.PreferredHigh)
+			if a.NewTarget > env.MaxSafe-1 {
+				t.Errorf("class CPU: NewTarget=%d exceeds MaxSafe-1=%d", a.NewTarget, env.MaxSafe-1)
 			}
+		}
+	}
+}
+
+// TestReconciler_Step_DriftsAbovePreferredHigh_UnderSaturation is the
+// v0.3.8 regression test. Pre-v0.3.8 the high clamp was PreferredHigh,
+// so adaptive could never use the saturation-penalty signal to drift
+// target past PreferredHigh — fans stayed pinned at MaxFan forever
+// defending a target that was itself the thermal equilibrium for current
+// load. Post-v0.3.8 the clamp is MaxSafe-1, so under sustained fan
+// saturation the score's saturationPenalty term wins and target drifts
+// up into the safety headroom.
+func TestReconciler_Step_DriftsAbovePreferredHigh_UnderSaturation(t *testing.T) {
+	o := NewObserver(5, 10.0)
+	nowBase := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+
+	// PassiveGPU pinned at ~80°C (== PreferredHigh) with fan demand
+	// pinned at 99% — the exact docker-1 P4 scenario from the v0.3.7
+	// post-deploy debug.
+	temps := []float64{80, 81, 80, 81, 80}
+	fans := []int{99, 99, 99, 99, 99}
+	for i := range temps {
+		o.Add(envelope.PassiveGPU, Sample{
+			Timestamp:    nowBase.Add(time.Duration(i) * 30 * time.Second),
+			TempCelsius:  temps[i],
+			FanDemandPct: fans[i],
+			InletCelsius: 22.0,
+		})
+	}
+
+	r, err := NewReconciler(ReconcilerOptions{
+		Observer:   o,
+		Mode:       mode.Balanced,
+		StatePath:  "",
+		WindowSize: 5,
+		Now:        func() time.Time { return nowBase.Add(time.Minute) },
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler failed: %v", err)
+	}
+
+	env := envelope.DefaultEnvelopes[envelope.PassiveGPU]
+
+	// Pre-set target at PreferredHigh — pre-v0.3.8 this is where adaptive
+	// would camp forever. Post-v0.3.8 it should drift up by one cycle.
+	r.mu.Lock()
+	cs := r.state.Classes[envelope.PassiveGPU]
+	cs.TargetCelsius = float64(env.PreferredHigh) // 80
+	cs.LastUpdate = nowBase.Add(time.Minute)
+	r.state.Classes[envelope.PassiveGPU] = cs
+	r.mu.Unlock()
+
+	actions, err := r.Step()
+	if err != nil {
+		t.Fatalf("Step failed: %v", err)
+	}
+
+	found := false
+	for _, a := range actions {
+		if a.Class != envelope.PassiveGPU {
+			continue
+		}
+		found = true
+		if a.OldTarget != env.PreferredHigh {
+			t.Errorf("OldTarget=%d, want PreferredHigh=%d", a.OldTarget, env.PreferredHigh)
+		}
+		if a.Reason != DriftReasonUp {
+			t.Errorf("Reason=%s, want %s. ScoreNow=%.2f ScoreUp=%.2f ScoreDown=%.2f",
+				a.Reason, DriftReasonUp, a.ScoreNow, a.ScoreUp, a.ScoreDown)
+		}
+		if a.NewTarget != env.PreferredHigh+1 {
+			t.Errorf("NewTarget=%d, want %d (PreferredHigh+1)", a.NewTarget, env.PreferredHigh+1)
+		}
+		if a.ScoreUp >= a.ScoreNow {
+			t.Errorf("ScoreUp=%.2f should be < ScoreNow=%.2f under saturation", a.ScoreUp, a.ScoreNow)
+		}
+	}
+	if !found {
+		t.Fatal("no PassiveGPU action returned")
+	}
+}
+
+// TestReconciler_Step_BoundedAtMaxSafe verifies the new (v0.3.8) high
+// clamp: target maxes out at MaxSafe-1, never reaches MaxSafe.
+func TestReconciler_Step_BoundedAtMaxSafe(t *testing.T) {
+	o := NewObserver(5, 10.0)
+	nowBase := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+
+	// PassiveGPU with sustained saturation pressure to push target up.
+	for i := 0; i < 5; i++ {
+		o.Add(envelope.PassiveGPU, Sample{
+			Timestamp:    nowBase.Add(time.Duration(i) * 30 * time.Second),
+			TempCelsius:  82.0,
+			FanDemandPct: 99,
+			InletCelsius: 22.0,
+		})
+	}
+
+	r, err := NewReconciler(ReconcilerOptions{
+		Observer:   o,
+		Mode:       mode.MinNoise,
+		StatePath:  "",
+		WindowSize: 5,
+		Now:        func() time.Time { return nowBase.Add(time.Minute) },
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler failed: %v", err)
+	}
+	env := envelope.DefaultEnvelopes[envelope.PassiveGPU]
+
+	// Pre-set target at the new ceiling.
+	r.mu.Lock()
+	cs := r.state.Classes[envelope.PassiveGPU]
+	cs.TargetCelsius = float64(env.MaxSafe - 1) // 84
+	cs.LastUpdate = nowBase.Add(time.Minute)
+	r.state.Classes[envelope.PassiveGPU] = cs
+	r.mu.Unlock()
+
+	actions, err := r.Step()
+	if err != nil {
+		t.Fatalf("Step failed: %v", err)
+	}
+
+	for _, a := range actions {
+		if a.Class != envelope.PassiveGPU {
+			continue
+		}
+		if a.NewTarget > env.MaxSafe-1 {
+			t.Errorf("NewTarget=%d exceeded MaxSafe-1=%d", a.NewTarget, env.MaxSafe-1)
+		}
+		if a.NewTarget == env.MaxSafe-1 && a.Reason != DriftReasonBoundedHigh && a.Reason != DriftReasonSettled {
+			t.Errorf("at ceiling: want reason=bounded_high or settled, got %s", a.Reason)
 		}
 	}
 }

@@ -6,6 +6,38 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.3.8] — 2026-05-28
+
+### Fixed — v0.3.7's saturation penalty couldn't actually move target (still ~90–100% fan after deploy)
+
+**Symptom**: after v0.3.7 shipped, docker-1 P4 dropped off the hard 100% pin but settled at ~90–99% fan (audible saturation oscillation) instead of relieving — same chassis, same load profile, same `PassiveGPU` class. `adaptive_target_celsius{class="passive_gpu"}` reached 80 (PreferredHigh) and stayed there; `fan_setpoint_percent` oscillated 88–99 with binding source pinned at `pg`. Reconciler logged `bounded_high` every 10 minutes — not `settled`, not `drift_up`. The saturation-relief mechanism v0.3.7 added was firing every cycle, scoring up-projection strictly better than now-projection, and being silently clipped to a no-op.
+
+**Root cause**: the high clamp in `internal/adaptive/reconciler.go:reconcileClass` was `env.PreferredHigh`, not `env.MaxSafe`. v0.3.7 added the saturation penalty + matching `FanDemandMean` projection so the score *gradient* pulls target up under saturation — but the clamp at `PreferredHigh` meant adaptive could never use that gradient past the operator-preferred ceiling. PassiveGPU's envelope has PreferredHigh=80 and MaxSafe=85 — 5°C of intentional safety headroom that adaptive was locked out of, even when fans were pinned at MaxFan defending PreferredHigh. The clamp predates v0.3.7 and was originally added (v0.3.2) to prevent a separate runaway-drift incident; before v0.3.7 the score had no "anti-saturation" term to keep target in-band when fans weren't pinned, so a hard `PreferredHigh` cap was the only thing stopping unbounded drift. Post-v0.3.7 the score is self-regulating: `bandViolation` pulls target down toward `PreferredHigh` when fans aren't saturating, `saturationPenalty` pushes up when they are. The clamp was load-bearing in v0.3.6 and obsolete in v0.3.7 — and removing it is what v0.3.7 was supposed to do.
+
+**Fix**: change the high clamp from `env.PreferredHigh` to `env.MaxSafe - 1` (`reconciler.go:449`). The -1 keeps a 1°C buffer below `MaxSafe` so PID deadband can't push *observed* temp past MaxSafe even when target is at the ceiling. Low clamp at `PreferredLow` is unchanged — there's no symmetric "anti-cold" signal pulling target into the cold zone, and a too-low target just makes the PID fight harder without a feedback loop to escape via.
+
+Replaying the docker-1 P4 saturation case against the new clamp: at `target=80, mean=80.8, fan=99`, `scoreBalanced` is `0.8 + 5·81 = 405.8`; the up-projection (`mean=81.8, fan=94`) scores `1.8 + 5·16 = 81.8` — strict-better by 324, drift_up wins, target → 81 on the next cycle. From `target=81` the chain continues until `FanDemandMean` falls below the 90 knee and the saturation term collapses to 0, at which point `bandViolation` (which uses `env.PreferredHigh`, not target) takes over and pulls target back down. Equilibrium for the docker-1 load profile lands at ~82°C with fan ~80–85% — well inside `[PreferredHigh, MaxSafe-1]`, never reaching the ceiling.
+
+**Bounded contract change**: pre-v0.3.8 adaptive target was bounded by `[PreferredLow, PreferredHigh]`. Post-v0.3.8 it's bounded by `[PreferredLow, MaxSafe-1]`. Per-class:
+
+| Class       | PreferredLow | PreferredHigh | MaxSafe-1 (new ceiling) |
+|-------------|--------------|---------------|-------------------------|
+| CPU         | 55           | 75            | 84                      |
+| PassiveGPU  | 65           | 80            | 84                      |
+| HDD         | 32           | 43            | 44                      |
+| SSD         | 45           | 60            | 69                      |
+
+In MinNoise mode the saturation-penalty weight is 10× vs Balanced's 5×, so MinNoise drifts toward the ceiling much more aggressively under any sustained fan saturation — operators who want fans down even at the cost of running each class in its upper safety headroom should pair this release with `HOST_AGENT_MODE=min-noise`.
+
+Regression tests:
+- `internal/adaptive/reconciler_test.go::TestReconciler_Step_DriftsAbovePreferredHigh_UnderSaturation` — pins the v0.3.7 deploy pathology directly (PassiveGPU, target=80, mean=80.8, fan=99 → drift_up to 81). Pre-v0.3.8 this test fails with `bounded_high` and `NewTarget=80`.
+- `internal/adaptive/reconciler_test.go::TestReconciler_Step_BoundedAtMaxSafe` — verifies the new ceiling: pre-set target at MaxSafe-1, push it with saturation, target stays at MaxSafe-1 with reason `bounded_high` or `settled` (never escapes).
+- Existing soak/bounded tests (`TestSoak_BoundedAlways_NeverEscapesPreferredRange`, etc.) updated to assert the new `[PreferredLow, MaxSafe-1]` contract.
+
+### Migration
+
+Drop-in image upgrade. Watchtower picks it up on the next 5-min poll. Hosts currently saturating after v0.3.7 will see `adaptive_target_celsius` resume drifting up at 1°C per 10-min cycle until fan demand falls below the saturation knee — typically 2–3 cycles past `PreferredHigh` for a sustained-load host. Hosts not saturating see no change (the new clamp only matters when the score's saturation term is non-zero, and `bandViolation` keeps target in-band the rest of the time).
+
 ## [0.3.7] — 2026-05-27
 
 ### Fixed — fans stuck at 100% under sustained GPU load even after temp settled in-band

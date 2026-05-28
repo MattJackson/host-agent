@@ -70,7 +70,7 @@ const (
 	DriftReasonSettled       DriftReason = "settled"        // current target scores best
 	DriftReasonUp            DriftReason = "drift_up"       // target +1
 	DriftReasonDown          DriftReason = "drift_down"     // target -1
-	DriftReasonBoundedHigh   DriftReason = "bounded_high"   // wanted to go up but at PreferredHigh
+	DriftReasonBoundedHigh   DriftReason = "bounded_high"   // wanted to go up but at MaxSafe-1
 	DriftReasonBoundedLow    DriftReason = "bounded_low"    // wanted to go down but at PreferredLow
 	DriftReasonVarianceReset DriftReason = "variance_reset" // TempStdDev > threshold; reset
 	DriftReasonError         DriftReason = "error"          // envelope missing, mode invalid, etc.
@@ -445,9 +445,24 @@ func (r *Reconciler) reconcileClass(class envelope.Class, now time.Time) DriftAc
 	}
 
 	// Bounded clamping per envelope.
+	//
+	// High clamp = MaxSafe - 1 (not PreferredHigh). Reasoning: v0.3.7
+	// added a saturation penalty so the score itself pulls target down
+	// toward PreferredHigh when fans aren't pinned, and up toward
+	// MaxSafe when they are. PreferredHigh as a hard clamp left the
+	// saturation penalty unable to actually move target — fans stayed
+	// pinned at MaxFan defending a PreferredHigh that was already the
+	// thermal equilibrium for current load. -1 keeps a 1°C buffer
+	// below MaxSafe so PID deadband can't push observed temp past it.
+	//
+	// Low clamp stays at PreferredLow — no symmetric pressure: a target
+	// below observed equilibrium just makes the PID fight harder, and
+	// there's no "anti-saturation" signal pulling target into the cold
+	// zone the way saturation does on the hot side.
+	highClamp := env.MaxSafe - 1
 	newTarget := action.OldTarget + bestDelta
-	if newTarget > env.PreferredHigh {
-		newTarget = env.PreferredHigh
+	if newTarget > highClamp {
+		newTarget = highClamp
 		if bestDelta > 0 {
 			action.Reason = DriftReasonBoundedHigh
 		}
