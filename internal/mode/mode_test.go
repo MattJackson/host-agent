@@ -377,6 +377,47 @@ func TestScore_MinNoise_LowerNearPreferredHigh(t *testing.T) {
 	}
 }
 
+// TestScore_SaturationPenalty_KeysOffP90NotMean verifies the v0.3.9 fix:
+// the saturation penalty must depend ONLY on FanDemandP90, so two windows
+// with wildly different means but identical p90 score identically. This is
+// what makes a transient fan dip unable to unmask the saturation signal.
+func TestScore_SaturationPenalty_KeysOffP90NotMean(t *testing.T) {
+	env := envelope.DefaultEnvelopes[envelope.PassiveGPU]
+
+	// Same temp/variance/p90; means differ by 30 points (dip vs no dip).
+	pinnedClean := WindowStats{TempMean: 81, TempStdDev: 1, FanChangeRate: 0.5, FanDemandMean: 99, FanDemandP90: 100}
+	pinnedDipped := WindowStats{TempMean: 81, TempStdDev: 1, FanChangeRate: 0.5, FanDemandMean: 69, FanDemandP90: 100}
+
+	for _, m := range []Mode{MaxCool, Balanced, MinNoise, Eco} {
+		t.Run(string(m), func(t *testing.T) {
+			scorer := m.Score()
+			if a, b := scorer(env, pinnedClean), scorer(env, pinnedDipped); a != b {
+				t.Errorf("%s: score must depend only on p90, not mean; clean=%v dipped=%v", m, a, b)
+			}
+		})
+	}
+}
+
+// TestScore_MinNoise_DownDriftAllowedWithHeadroom is the anti-regression
+// guard for the fix: when the fan genuinely has headroom (p90 well below
+// the saturation threshold) and temp sits above PreferredHigh, drifting the
+// target DOWN must still score better than holding. The p90 fix must not
+// over-suppress legitimate downward drift — only the saturated case.
+func TestScore_MinNoise_DownDriftAllowedWithHeadroom(t *testing.T) {
+	env := envelope.DefaultEnvelopes[envelope.PassiveGPU] // PreferredHigh=80
+	scorer := MinNoise.Score()
+
+	// Temp above PreferredHigh, fan cruising (p90=60 → zero penalty).
+	now := WindowStats{TempMean: 82, TempStdDev: 1, FanChangeRate: 0.5, FanDemandP90: 60}
+	// Synth "down 1°C": temp falls, fan rises a little — still unsaturated.
+	down := WindowStats{TempMean: 81, TempStdDev: 1.3, FanChangeRate: 1.0, FanDemandP90: 65}
+
+	if !(scorer(env, down) < scorer(env, now)) {
+		t.Errorf("with fan headroom and temp above PreferredHigh, down-drift should score lower; now=%v down=%v",
+			scorer(env, now), scorer(env, down))
+	}
+}
+
 func TestSaturationPenalty_QuadraticAbove90(t *testing.T) {
 	cases := []struct {
 		fan, want float64
@@ -407,12 +448,13 @@ func TestScore_SaturationDrivesTargetUp_AllModes(t *testing.T) {
 	env := envelope.DefaultEnvelopes[envelope.PassiveGPU]
 
 	// Saturated state: in-band, low variance, fan pinned near MaxFan.
+	// FanDemandP90 is the field the penalty reads (post-v0.3.9).
 	statsNow := WindowStats{
-		TempMean: 78, TempStdDev: 1.0, FanChangeRate: 0.5, FanDemandMean: 98,
+		TempMean: 78, TempStdDev: 1.0, FanChangeRate: 0.5, FanDemandMean: 98, FanDemandP90: 100,
 	}
 	// Synth "up by 1°C": mean shifts up, fan demand drops.
 	statsUp := WindowStats{
-		TempMean: 79, TempStdDev: 0.7, FanChangeRate: 0, FanDemandMean: 93,
+		TempMean: 79, TempStdDev: 0.7, FanChangeRate: 0, FanDemandMean: 93, FanDemandP90: 95,
 	}
 
 	for _, m := range []Mode{Balanced, MinNoise, Eco} {

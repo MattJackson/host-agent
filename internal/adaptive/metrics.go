@@ -32,6 +32,7 @@ var classesInRenderOrder = []envelope.Class{
 //	adaptive_window_temp_p50{class}           gauge — °C
 //	adaptive_window_temp_p90{class}           gauge — °C
 //	adaptive_window_fan_change_rate{class}    gauge — changes/min
+//	adaptive_window_fan_demand_p90{class}     gauge — percent (saturation signal)
 //	adaptive_window_inlet_mean{class}         gauge — °C
 //
 // Same metric formatting style as internal/metrics — no labels other
@@ -108,6 +109,18 @@ func RenderObserverMetrics(o *Observer) []byte {
 	for _, c := range classesInRenderOrder {
 		s := o.Stats(c)
 		fmt.Fprintf(&b, "adaptive_window_inlet_mean{class=%q} %.4f\n", string(c), s.InletMean)
+	}
+	fmt.Fprintf(&b, "\n")
+
+	// adaptive_window_fan_demand_p90 — the saturation signal the reconciler
+	// scores on. A high p90 with a low fan_change_rate is a pinned fan; this
+	// is what the saturation penalty keys off (robust to transient dips that
+	// would drag the mean down). Exposed for diagnosing fan-saturation drift.
+	fmt.Fprintf(&b, "# HELP adaptive_window_fan_demand_p90 90th-percentile fan demand (percent) across samples in the rolling window.\n")
+	fmt.Fprintf(&b, "# TYPE adaptive_window_fan_demand_p90 gauge\n")
+	for _, c := range classesInRenderOrder {
+		s := o.Stats(c)
+		fmt.Fprintf(&b, "adaptive_window_fan_demand_p90{class=%q} %.4f\n", string(c), s.FanDemandP90)
 	}
 	return b.Bytes()
 }

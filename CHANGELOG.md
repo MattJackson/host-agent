@@ -6,6 +6,35 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.3.9] — 2026-06-15
+
+### Fixed — transient fan dip drove a downward-drift limit cycle (fans pinned ~97–100% for no thermal reason)
+
+**Symptom**: docker-1's PassiveGPU (P4) sat at 80–81°C — comfortably in-band, 10°C below the 90°C emergency — yet `fan_setpoint_percent` was pinned at 97–100% and `adaptive_target_celsius{class="passive_gpu"}` was decaying monotonically downward (84 → 73 over ~1h, **11 down-drifts and 0 up-drifts in 2h**), with no envelope or operator change. Earlier in the day the same class held a healthy equilibrium at target 84. The decay reliably started right after a brief fan dip and would reverse (target rockets back up) once the dip aged out of the observation window — a limit cycle whose period tracks the window length (~104 min).
+
+**Root cause**: the `saturationPenalty` term — the signal that pushes target *up* to relieve a pinned fan — keyed off `WindowStats.FanDemandMean`, the arithmetic mean of fan demand over the rolling window (`internal/adaptive/observer.go`). A single transient dip (a brief load/temp drop sends the fan low for part of the window) drags that mean below the 90% saturation knee even while the fan is pinned at MaxFan for the *majority* of the window. With the mean below 90, `saturationPenalty` evaluates to 0, so `scoreMinNoise` collapses to its `5·aboveHigh` term. Because the card's true equilibrium under load (`adaptive_window_temp_p50`=81) sits ~1°C above `PreferredHigh` (80), the down-projection (`mean→80`) always scores best, and the reconciler drifts the target down 1°C/cycle — chasing a target the saturated PID can never reach, which pins the fan. The decay continues toward `PreferredLow` until the dip ages out of the window, `FanDemandMean` climbs back above 90 (the window p90 was 100 the entire time), the penalty snaps back, and target shoots up again. v0.3.7 introduced the penalty but used a contamination-prone statistic; this is a regression of the same saturation-blindness class.
+
+**Fix**: the saturation penalty now keys off `WindowStats.FanDemandP90` — the 90th-percentile fan demand over the window (nearest-rank, same convention as the temp percentiles) — instead of the mean. A fan pinned at MaxFan for ≥10% of the window reports p90=100 regardless of any minority dip, so the penalty reflects whether the fan is *actually* pinned. The reconciler's up/down synth projections relieve `FanDemandP90` on the same first-order model they used for `FanDemandMean`. `FanDemandMean` is still computed (and is the only score input that changed); the high/low clamps from v0.3.8 are unchanged. Verified against the captured docker-1 window (`p50=81, p90=100, mean=74.5`): pre-fix the down-projection wins (`ScoreDown=4.16 < ScoreNow=8.11`, drift_down 80→79); post-fix the up-projection wins and the target drifts up to relieve the fan.
+
+**Why p90, not a down-drift guard**: blocking down-drift whenever the fan is currently saturated would also block *legitimate* down-drift in the case where the fan has genuine cooling headroom (p90 < 90) and temp sits above `PreferredHigh` — there, demanding a colder target is achievable and correct. Keying the penalty off p90 distinguishes the two cases with the existing scoring machinery and needs no special-case branch.
+
+### Added
+
+- `adaptive_window_fan_demand_p90{class}` gauge (node-exporter textfile / `:9100`) — the saturation signal the reconciler scores on. Fan demand previously had **zero** dashboard visibility, which is part of why this limit cycle was hard to spot. A high p90 with a low `fan_change_rate` is a pinned fan.
+
+### Tests
+
+- `internal/adaptive/reconciler_test.go::TestReconciler_Step_TransientFanDip_DoesNotDriftDown` — reproduces the docker-1 window (temp 81°C, 6/10 samples pinned at 100, 4/10 dipped to 24 → mean 70, p90 100). Asserts the target does **not** drift down. Confirmed to fail under the old mean-based penalty (`drift_down 80→79`) and pass under the fix.
+- `internal/adaptive/reconciler_test.go::TestReconciler_Step_DownDriftStillWorks_WithFanHeadroom` — anti-regression: with the fan cruising at 55% and temp above `PreferredHigh`, the target still drifts down. Guards against over-suppression.
+- `internal/mode/mode_test.go::TestScore_SaturationPenalty_KeysOffP90NotMean` — two windows with identical p90 but means 30 points apart score identically, across all four modes.
+- `internal/mode/mode_test.go::TestScore_MinNoise_DownDriftAllowedWithHeadroom` — mode-level companion to the headroom test.
+- `internal/adaptive/observer_test.go::TestObserver_Stats_FanDemandP90_NearestRank` / `TestObserver_Stats_FanDemandP90_IgnoresTransientDip` — p90 computation and dip-robustness.
+- `TestScore_SaturationDrivesTargetUp_AllModes` and the metrics-render count tests updated for the new field/series.
+
+### Migration
+
+Drop-in image upgrade; Watchtower picks it up on the next 5-min poll. Hosts currently caught in the down-drift cycle will see `adaptive_target_celsius` stop decaying and resume drifting up at 1°C per 10-min cycle until fan demand falls below the saturation knee. Hosts not saturating see no change.
+
 ## [0.3.8] — 2026-05-28
 
 ### Fixed — v0.3.7's saturation penalty couldn't actually move target (still ~90–100% fan after deploy)

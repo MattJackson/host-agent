@@ -616,6 +616,157 @@ func TestReconciler_Step_BoundedAtMaxSafe(t *testing.T) {
 	}
 }
 
+// TestReconciler_Step_TransientFanDip_DoesNotDriftDown is the v0.3.9
+// regression test for the docker-1 limit cycle. A single transient fan
+// dip (a brief load/temp drop sends the fan low for part of the window)
+// drags the windowed *mean* fan demand below the 90% saturation
+// threshold — even while the fan is pinned at MaxFan for most of the
+// window. Pre-v0.3.9 the saturation penalty read FanDemandMean, so the
+// penalty zeroed out, scoreMinNoise collapsed to its aboveHigh term, and
+// since the card's equilibrium sits ~1°C above PreferredHigh the target
+// drifted DOWN every cycle — chasing a target the saturated PID could
+// never reach, pinning the fan, until the dip aged out of the window and
+// the target rocketed back up. The penalty now reads FanDemandP90, which
+// stays at 100 through the dip, so the target must NOT drift down.
+func TestReconciler_Step_TransientFanDip_DoesNotDriftDown(t *testing.T) {
+	o := NewObserver(10, 10.0)
+	nowBase := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+
+	// Card equilibrium just above PreferredHigh (80): all temps 81°C.
+	// Fan pinned at 100 for 6 of 10 samples, dipped to 24 for 4 — the
+	// dip drags mean to 70 (penalty would be 0) but p90 stays 100.
+	fans := []int{24, 100, 24, 100, 24, 100, 24, 100, 100, 100}
+	for i, f := range fans {
+		o.Add(envelope.PassiveGPU, Sample{
+			Timestamp:    nowBase.Add(time.Duration(i) * 30 * time.Second),
+			TempCelsius:  81.0,
+			FanDemandPct: f,
+			InletCelsius: 22.0,
+		})
+	}
+
+	// Sanity: confirm the window is exactly the pathological shape —
+	// mean below the saturation threshold, p90 pinned at MaxFan.
+	st := o.Stats(envelope.PassiveGPU)
+	if st.FanDemandMean >= 90 {
+		t.Fatalf("test setup: FanDemandMean=%.1f should be <90 to exercise the bug", st.FanDemandMean)
+	}
+	if st.FanDemandP90 < 100 {
+		t.Fatalf("test setup: FanDemandP90=%.1f should be 100", st.FanDemandP90)
+	}
+
+	r, err := NewReconciler(ReconcilerOptions{
+		Observer:   o,
+		Mode:       mode.MinNoise,
+		StatePath:  "",
+		WindowSize: 10,
+		Now:        func() time.Time { return nowBase.Add(time.Minute) },
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler failed: %v", err)
+	}
+	env := envelope.DefaultEnvelopes[envelope.PassiveGPU]
+
+	// Start target at PreferredHigh (80) — where the down-drift began on
+	// docker-1.
+	r.mu.Lock()
+	cs := r.state.Classes[envelope.PassiveGPU]
+	cs.TargetCelsius = float64(env.PreferredHigh)
+	cs.LastUpdate = nowBase.Add(time.Minute)
+	r.state.Classes[envelope.PassiveGPU] = cs
+	r.mu.Unlock()
+
+	actions, err := r.Step()
+	if err != nil {
+		t.Fatalf("Step failed: %v", err)
+	}
+
+	found := false
+	for _, a := range actions {
+		if a.Class != envelope.PassiveGPU {
+			continue
+		}
+		found = true
+		if a.Reason == DriftReasonDown || a.NewTarget < a.OldTarget {
+			t.Errorf("target drifted DOWN under a transient-dip-contaminated window (the limit cycle bug): reason=%s old=%d new=%d ScoreNow=%.2f ScoreUp=%.2f ScoreDown=%.2f",
+				a.Reason, a.OldTarget, a.NewTarget, a.ScoreNow, a.ScoreUp, a.ScoreDown)
+		}
+		// With the fan genuinely pinned (p90=100), the correct response is
+		// to relieve it by raising the target.
+		if a.ScoreUp >= a.ScoreNow {
+			t.Errorf("ScoreUp=%.2f should be < ScoreNow=%.2f (saturation should reward raising target)", a.ScoreUp, a.ScoreNow)
+		}
+	}
+	if !found {
+		t.Fatal("no PassiveGPU action returned")
+	}
+}
+
+// TestReconciler_Step_DownDriftStillWorks_WithFanHeadroom is the
+// anti-regression companion to the transient-dip test: when the fan
+// genuinely has headroom (p90 well below the 90% threshold) and temp sits
+// above PreferredHigh, the reconciler must still drift the target DOWN. The
+// p90 fix must suppress down-drift ONLY under real saturation.
+func TestReconciler_Step_DownDriftStillWorks_WithFanHeadroom(t *testing.T) {
+	o := NewObserver(10, 10.0)
+	nowBase := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+
+	// Temp above PreferredHigh (80) at 83°C, fan cruising at ~55% — lots of
+	// cooling headroom, so demanding a colder target is achievable.
+	for i := 0; i < 10; i++ {
+		o.Add(envelope.PassiveGPU, Sample{
+			Timestamp:    nowBase.Add(time.Duration(i) * 30 * time.Second),
+			TempCelsius:  83.0,
+			FanDemandPct: 55,
+			InletCelsius: 22.0,
+		})
+	}
+
+	st := o.Stats(envelope.PassiveGPU)
+	if st.FanDemandP90 >= 90 {
+		t.Fatalf("test setup: FanDemandP90=%.1f should be <90 (fan has headroom)", st.FanDemandP90)
+	}
+
+	r, err := NewReconciler(ReconcilerOptions{
+		Observer:   o,
+		Mode:       mode.MinNoise,
+		StatePath:  "",
+		WindowSize: 10,
+		Now:        func() time.Time { return nowBase.Add(time.Minute) },
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler failed: %v", err)
+	}
+	env := envelope.DefaultEnvelopes[envelope.PassiveGPU]
+
+	r.mu.Lock()
+	cs := r.state.Classes[envelope.PassiveGPU]
+	cs.TargetCelsius = float64(env.MaxSafe - 1) // 84, above the 83°C equilibrium
+	cs.LastUpdate = nowBase.Add(time.Minute)
+	r.state.Classes[envelope.PassiveGPU] = cs
+	r.mu.Unlock()
+
+	actions, err := r.Step()
+	if err != nil {
+		t.Fatalf("Step failed: %v", err)
+	}
+
+	found := false
+	for _, a := range actions {
+		if a.Class != envelope.PassiveGPU {
+			continue
+		}
+		found = true
+		if a.Reason != DriftReasonDown {
+			t.Errorf("with fan headroom + temp above PreferredHigh, want drift_down; got reason=%s ScoreNow=%.2f ScoreUp=%.2f ScoreDown=%.2f",
+				a.Reason, a.ScoreNow, a.ScoreUp, a.ScoreDown)
+		}
+	}
+	if !found {
+		t.Fatal("no PassiveGPU action returned")
+	}
+}
+
 func TestReconciler_Step_BoundedLow(t *testing.T) {
 	o := NewObserver(5, 10.0)
 	nowBase := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)

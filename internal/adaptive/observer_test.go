@@ -317,6 +317,56 @@ func TestObserver_Stats_Percentiles_NearestRank(t *testing.T) {
 	}
 }
 
+func TestObserver_Stats_FanDemandP90_NearestRank(t *testing.T) {
+	o := NewObserver(480, 10)
+	now := time.Now()
+
+	// Fan demands 41..50 (added out of order to prove sorting). N=10, N-1=9.
+	// P90: idx = round(0.90 * 9) = round(8.1) = 8 -> sorted[8] = 49
+	fans := []int{50, 41, 49, 42, 48, 43, 47, 44, 46, 45}
+	for i, f := range fans {
+		o.Add(envelope.CPU, Sample{
+			Timestamp:    now.Add(time.Duration(i) * time.Second),
+			TempCelsius:  72.0,
+			FanDemandPct: f,
+			InletCelsius: 22.0,
+		})
+	}
+
+	stats := o.Stats(envelope.CPU)
+	if stats.FanDemandP90 != 49 {
+		t.Errorf("expected FanDemandP90=49, got %f", stats.FanDemandP90)
+	}
+}
+
+// TestObserver_Stats_FanDemandP90_IgnoresTransientDip is the observer-level
+// half of the v0.3.9 limit-cycle fix: a window pinned at MaxFan with a
+// minority of dipped samples reports a depressed mean but a p90 still at
+// MaxFan — the saturation signal the reconciler must trust.
+func TestObserver_Stats_FanDemandP90_IgnoresTransientDip(t *testing.T) {
+	o := NewObserver(480, 10)
+	now := time.Now()
+
+	// 4 dipped (24%) + 6 pinned (100%): mean = 69.6, p90 = 100.
+	fans := []int{24, 100, 24, 100, 24, 100, 24, 100, 100, 100}
+	for i, f := range fans {
+		o.Add(envelope.PassiveGPU, Sample{
+			Timestamp:    now.Add(time.Duration(i) * time.Second),
+			TempCelsius:  81.0,
+			FanDemandPct: f,
+			InletCelsius: 22.0,
+		})
+	}
+
+	stats := o.Stats(envelope.PassiveGPU)
+	if stats.FanDemandMean >= 90 {
+		t.Errorf("expected FanDemandMean<90 (dip-depressed), got %f", stats.FanDemandMean)
+	}
+	if stats.FanDemandP90 != 100 {
+		t.Errorf("expected FanDemandP90=100 (fan genuinely pinned), got %f", stats.FanDemandP90)
+	}
+}
+
 func TestObserver_Stats_FanChangeRate(t *testing.T) {
 	o := NewObserver(480, 10)
 	now := time.Now()

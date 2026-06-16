@@ -27,11 +27,11 @@ func TestRenderObserverMetrics_EmptyObserver(t *testing.T) {
 		}
 	}
 
-	if helpCount != 8 {
-		t.Errorf("expected 8 HELP lines, got %d", helpCount)
+	if helpCount != 9 {
+		t.Errorf("expected 9 HELP lines, got %d", helpCount)
 	}
-	if typeCount != 8 {
-		t.Errorf("expected 8 TYPE lines, got %d", typeCount)
+	if typeCount != 9 {
+		t.Errorf("expected 9 TYPE lines, got %d", typeCount)
 	}
 
 	// Verify every class label appears for every metric (4 classes × 8 metrics = 32 series lines minimum)
@@ -44,13 +44,14 @@ func TestRenderObserverMetrics_EmptyObserver(t *testing.T) {
 			bytes.Contains(line, []byte("adaptive_window_temp_p50{class=")) ||
 			bytes.Contains(line, []byte("adaptive_window_temp_p90{class=")) ||
 			bytes.Contains(line, []byte("adaptive_window_fan_change_rate{class=")) ||
+			bytes.Contains(line, []byte("adaptive_window_fan_demand_p90{class=")) ||
 			bytes.Contains(line, []byte("adaptive_window_inlet_mean{class=")) {
 			classMetricCount++
 		}
 	}
 
-	if classMetricCount != 32 {
-		t.Errorf("expected 32 metric series lines (4 classes × 8 metrics), got %d", classMetricCount)
+	if classMetricCount != 36 {
+		t.Errorf("expected 36 metric series lines (4 classes × 9 metrics), got %d", classMetricCount)
 	}
 
 	// Verify all sample counts are 0 and float values render as 0.0000

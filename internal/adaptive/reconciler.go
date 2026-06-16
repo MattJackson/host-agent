@@ -424,11 +424,15 @@ func (r *Reconciler) reconcileClass(class envelope.Class, now time.Time) DriftAc
 	statsUp.TempStdDev = math.Max(0, stats.TempStdDev-varianceReliefPerC*drift)
 	statsUp.FanChangeRate = math.Max(0, stats.FanChangeRate-fanReliefPerC*drift)
 	statsUp.FanDemandMean = math.Max(0, stats.FanDemandMean-fanDemandReliefPerC*drift)
+	// FanDemandP90 is what the saturation penalty reads — relieve it on the
+	// same model as the mean (raising target lets the PID back off).
+	statsUp.FanDemandP90 = math.Max(0, stats.FanDemandP90-fanDemandReliefPerC*drift)
 	statsDown := stats
 	statsDown.TempMean = stats.TempMean - drift
 	statsDown.TempStdDev = stats.TempStdDev + varianceReliefPerC*drift
 	statsDown.FanChangeRate = stats.FanChangeRate + fanReliefPerC*drift
 	statsDown.FanDemandMean = math.Min(100, stats.FanDemandMean+fanDemandReliefPerC*drift)
+	statsDown.FanDemandP90 = math.Min(100, stats.FanDemandP90+fanDemandReliefPerC*drift)
 
 	action.ScoreNow = scoreFn(env, stats)
 	action.ScoreUp = scoreFn(env, statsUp)

@@ -147,6 +147,7 @@ func (o *Observer) Add(class envelope.Class, s Sample) (accepted, reset bool) {
 //   - TempStdDev = POPULATION stddev (divide by N, not N-1)
 //   - TempP10/50/90 = nearest-rank percentile (sort, take index round(p/100 * (N-1)))
 //   - FanDemandMean = arithmetic mean of fan-demand percents
+//   - FanDemandP90 = nearest-rank p90 of fan-demand percents (saturation signal)
 //   - FanChangeRate = count of adjacent-sample changes >=1 in fan-demand, divided by window duration in minutes
 //   - InletMean/StdDev = same conventions as Temp
 //   - Samples = current buffer length
@@ -200,6 +201,17 @@ func (o *Observer) computeStats(class envelope.Class) mode.WindowStats {
 	}
 	fanMean := float64(fanSum) / float64(n)
 
+	// Fan demand p90 (nearest-rank, same convention as temp percentiles).
+	// The saturation penalty keys off this rather than the mean so a
+	// transient fan dip can't mask a fan that is otherwise pinned at
+	// MaxFan — see mode.saturationPenalty.
+	sortedFan := make([]float64, n)
+	for i, s := range buf {
+		sortedFan[i] = float64(s.FanDemandPct)
+	}
+	sortFloats(sortedFan)
+	fanP90 := sortedFan[percentileIndex(90, n)]
+
 	// Fan change rate: count adjacent changes >=1, divide by duration in minutes
 	var changes int
 	for i := 1; i < n; i++ {
@@ -241,6 +253,7 @@ func (o *Observer) computeStats(class envelope.Class) mode.WindowStats {
 		TempP50:       tempP50,
 		TempP90:       tempP90,
 		FanDemandMean: fanMean,
+		FanDemandP90:  fanP90,
 		FanChangeRate: fanChangeRate,
 		InletMean:     inletMean,
 		InletStdDev:   inletStdDev,

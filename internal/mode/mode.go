@@ -80,6 +80,14 @@ type WindowStats struct {
 	TempP50       float64
 	TempP90       float64
 	FanDemandMean float64
+	// FanDemandP90 is the 90th-percentile fan demand over the window. The
+	// saturation penalty keys off this, NOT FanDemandMean: a single
+	// transient fan dip (e.g. a brief load/temp drop) drags the mean below
+	// the 90% saturation threshold and zeroes the penalty for the whole
+	// window length, even while the fan is pinned at MaxFan 90% of the
+	// time. p90 ignores the dip and reports the fan as saturated when it
+	// genuinely is. See saturationPenalty.
+	FanDemandP90  float64
 	FanChangeRate float64 // changes per minute
 	InletMean     float64
 	InletStdDev   float64
@@ -121,7 +129,7 @@ func (m Mode) Score() ScoreFunc {
 // sat anywhere off PreferredMid — even when temp was well within safe
 // operating range.
 
-// saturationPenalty grows quadratically above 90% mean fan demand:
+// saturationPenalty grows quadratically above 90% fan demand:
 // 0 at ≤90, 25 at 95, 100 at 100. A fan stuck near MaxFan is the
 // worst observable state regardless of how "settled" temp looks on
 // the variance/fan-change-rate terms — those go LOW under sustained
@@ -132,8 +140,16 @@ func (m Mode) Score() ScoreFunc {
 // never drifted target up to a fan-relieving point. Penalty weight
 // varies per mode (max-cool tolerates saturation by intent; min-noise
 // abhors it).
-func saturationPenalty(fanDemandMean float64) float64 {
-	excess := math.Max(0, fanDemandMean-90.0) / 10.0
+//
+// Callers MUST pass the windowed p90 fan demand (WindowStats.FanDemandP90),
+// not the arithmetic mean. v0.3.8 keyed this off FanDemandMean, which a
+// single transient dip could drag below 90 — zeroing the penalty for a
+// full window length and letting the target decay downward into a pinned
+// fan (a load/temp dip → target chases down → PID saturates → limit cycle).
+// p90 reports the fan as saturated whenever it is pinned for ≥10% of the
+// window, which is the condition we actually care about.
+func saturationPenalty(fanDemandP90 float64) float64 {
+	excess := math.Max(0, fanDemandP90-90.0) / 10.0
 	return excess * excess * 100.0
 }
 
@@ -149,7 +165,7 @@ func scoreMaxCool(env envelope.Envelope, s WindowStats) float64 {
 	// at MaxFan forever.
 	aboveLow := math.Max(0, s.TempMean-float64(env.PreferredLow))
 	variance := s.TempStdDev * s.TempStdDev
-	return aboveLow + 0.5*variance + 1.0*saturationPenalty(s.FanDemandMean)
+	return aboveLow + 0.5*variance + 1.0*saturationPenalty(s.FanDemandP90)
 }
 
 func scoreBalanced(env envelope.Envelope, s WindowStats) float64 {
@@ -166,7 +182,7 @@ func scoreBalanced(env envelope.Envelope, s WindowStats) float64 {
 	// "in-band, low variance, low fan-change" and reported "settled".
 	bandViolation := bandDistance(s.TempMean, float64(env.PreferredLow), float64(env.PreferredHigh))
 	variance := s.TempStdDev * s.TempStdDev
-	return bandViolation + 0.3*variance + 0.3*s.FanChangeRate + 5.0*saturationPenalty(s.FanDemandMean)
+	return bandViolation + 0.3*variance + 0.3*s.FanChangeRate + 5.0*saturationPenalty(s.FanDemandP90)
 }
 
 func scoreMinNoise(env envelope.Envelope, s WindowStats) float64 {
@@ -183,7 +199,7 @@ func scoreMinNoise(env envelope.Envelope, s WindowStats) float64 {
 	belowHigh := math.Max(0, float64(env.PreferredHigh)-s.TempMean)
 	aboveHigh := math.Max(0, s.TempMean-float64(env.PreferredHigh))
 	variance := s.TempStdDev * s.TempStdDev
-	return belowHigh + 5.0*aboveHigh + 2.0*s.FanChangeRate + 0.5*variance + 10.0*saturationPenalty(s.FanDemandMean)
+	return belowHigh + 5.0*aboveHigh + 2.0*s.FanChangeRate + 0.5*variance + 10.0*saturationPenalty(s.FanDemandP90)
 }
 
 func scoreEco(env envelope.Envelope, s WindowStats) float64 {
