@@ -4,6 +4,42 @@ import (
 	"testing"
 )
 
+func TestClass_String(t *testing.T) {
+	cases := map[Class]string{
+		CPU:        "cpu",
+		PassiveGPU: "passive_gpu",
+		ActiveGPU:  "active_gpu",
+		HDD:        "hdd",
+		SSD:        "ssd",
+	}
+	for c, want := range cases {
+		if got := c.String(); got != want {
+			t.Errorf("Class(%q).String() = %q, want %q", string(c), got, want)
+		}
+	}
+}
+
+func TestGet(t *testing.T) {
+	// Known classes return their envelope and no error.
+	for _, c := range []Class{CPU, PassiveGPU, HDD, SSD} {
+		e, err := Get(c)
+		if err != nil {
+			t.Errorf("Get(%s) returned error: %v", c, err)
+		}
+		if e != DefaultEnvelopes[c] {
+			t.Errorf("Get(%s) = %+v, want %+v", c, e, DefaultEnvelopes[c])
+		}
+	}
+	// ActiveGPU is intentionally absent → error, zero envelope.
+	if e, err := Get(ActiveGPU); err == nil {
+		t.Errorf("Get(ActiveGPU) should error (no chassis envelope), got %+v", e)
+	}
+	// Unknown class → error.
+	if _, err := Get(Class("bogus")); err == nil {
+		t.Error("Get(bogus) should return an error")
+	}
+}
+
 func TestDefaultEnvelopes_AllClassesPresent(t *testing.T) {
 	expected := []Class{CPU, PassiveGPU, HDD, SSD}
 	excluded := ActiveGPU

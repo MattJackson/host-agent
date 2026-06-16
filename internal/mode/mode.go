@@ -174,7 +174,7 @@ func scoreBalanced(env envelope.Envelope, s WindowStats) float64 {
 	// adaptive from chasing in-band drift that would push the PID into
 	// saturation for no thermal benefit.
 	//
-	// Saturation penalty (weight 5.0): at FanDemandMean=95 the penalty
+	// Saturation penalty (weight 5.0): at FanDemandP90=95 the penalty
 	// is 125 — dominant over a ±1°C bandViolation — so any sustained
 	// fan saturation drives target up regardless of where mean sits in
 	// the band. This is the bugfix for the "fan stuck at 100 while

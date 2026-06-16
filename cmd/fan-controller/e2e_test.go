@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 	"time"
 
@@ -14,6 +15,15 @@ import (
 	"github.com/pq/docker-server/host-agent/internal/runner"
 	"github.com/pq/docker-server/host-agent/internal/sensors"
 )
+
+// cycleDurationRE matches the cycle-duration metric value, which is real
+// wall-clock and therefore non-deterministic. Normalized to a fixed token
+// before golden comparison so the test asserts everything BUT that value.
+var cycleDurationRE = regexp.MustCompile(`(?m)^fan_controller_cycle_duration_seconds .*$`)
+
+func normalizeMetrics(b []byte) []byte {
+	return cycleDurationRE.ReplaceAll(b, []byte("fan_controller_cycle_duration_seconds <scrubbed>"))
+}
 
 // stubReader is the same shape as the controller package's test stub —
 // duplicated here because Go's tests can't share test-only types
@@ -95,6 +105,7 @@ func TestEndToEnd_ThreeCyclesMatchesGolden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read metrics: %v", err)
 	}
+	got = normalizeMetrics(got)
 
 	goldenPath := filepath.Join("testdata", "metrics_3cycles.golden")
 	if os.Getenv("UPDATE_GOLDEN") == "1" {

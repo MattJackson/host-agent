@@ -64,8 +64,12 @@ func Write(path string, s State) error {
 	} else {
 		when = when.UTC()
 	}
+	// RFC3339 (not a literal-"Z" layout): `when` is forced to UTC above, so
+	// Go emits the "Z" zone marker — byte-identical to the old layout — but
+	// if the UTC normalization is ever dropped the zone offset stays
+	// truthful instead of silently mislabelling a local time as "Z".
 	body := fmt.Sprintf("base_speed=%.4f\nlast_speed=%d\nsamples=%d\nlast_updated=%s\n",
-		s.BaseSpeed, s.LastSpeed, s.Samples, when.Format("2006-01-02T15:04:05Z"))
+		s.BaseSpeed, s.LastSpeed, s.Samples, when.Format(time.RFC3339))
 
 	if _, err := tmp.WriteString(body); err != nil {
 		tmp.Close()

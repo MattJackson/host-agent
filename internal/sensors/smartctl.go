@@ -37,6 +37,9 @@ type Drive struct {
 // Smartctl handles drive discovery, classification, per-drive temp
 // reads, and the cache (60s default) that prevents hammering the RAID
 // controller every 15-second main-loop cycle.
+//
+// Not safe for concurrent use: Read/Probe mutate the unguarded cache
+// fields and are only ever called from the single main-cycle goroutine.
 type Smartctl struct {
 	Runner       runner.Runner
 	Enabled      bool
@@ -74,6 +77,13 @@ func (s *Smartctl) Probe(ctx context.Context, mode string) (label string, fatal 
 		// fall through — silently disable on error
 	}
 
+	// Bound the whole discovery pass: on a host with many drives behind a
+	// slow RAID controller, the per-drive `smartctl -i` calls (each with
+	// the runner's own 30s timeout) could otherwise serialise into many
+	// minutes. 120s is generous for any realistic drive count.
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+
 	scan, err := s.Runner.Run(ctx, "smartctl", "--scan")
 	if err != nil || strings.TrimSpace(scan) == "" {
 		s.Enabled = false
@@ -86,6 +96,7 @@ func (s *Smartctl) Probe(ctx context.Context, mode string) (label string, fatal 
 		return "smartctl --scan returned nothing — HDD monitoring disabled", false
 	}
 
+	var classifyErrs int
 	for _, line := range strings.Split(scan, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -106,9 +117,16 @@ func (s *Smartctl) Probe(ctx context.Context, mode string) (label string, fatal 
 			continue
 		}
 
-		// Classify by Rotation Rate.
+		// Classify by Rotation Rate. If `smartctl -i` fails (permission,
+		// RAID timeout, device busy) the drive silently defaults to SSD,
+		// which would put it on the wrong PID track for the process
+		// lifetime — so count the failures and surface them in the label
+		// the caller logs.
 		drive := Drive{Dev: dev, Spec: spec, Type: DriveSSD}
-		info, _ := s.Runner.Run(ctx, "smartctl", "-i", "-d", spec, dev)
+		info, infoErr := s.Runner.Run(ctx, "smartctl", "-i", "-d", spec, dev)
+		if infoErr != nil {
+			classifyErrs++
+		}
 		if rotationRateRE.MatchString(info) {
 			drive.Type = DriveHDD
 		}
@@ -131,8 +149,12 @@ func (s *Smartctl) Probe(ctx context.Context, mode string) (label string, fatal 
 			ssdCount++
 		}
 	}
-	return fmt.Sprintf("HDD monitoring: %d drive(s) (%d HDD, %d SSD) — %s",
-		len(s.Drives), hddCount, ssdCount, list.String()), false
+	label = fmt.Sprintf("HDD monitoring: %d drive(s) (%d HDD, %d SSD) — %s",
+		len(s.Drives), hddCount, ssdCount, list.String())
+	if classifyErrs > 0 {
+		label += fmt.Sprintf(" [WARN: %d drive(s) failed `smartctl -i` classification and defaulted to SSD]", classifyErrs)
+	}
+	return label, false
 }
 
 // rotationRateRE — `Rotation Rate:     7200 rpm`. Bash:
@@ -160,8 +182,16 @@ func (s *Smartctl) Read(ctx context.Context) (hddMax, ssdMax int, details string
 	for i, d := range s.Drives {
 		out, err := s.Runner.Run(ctx, "smartctl", "-A", "-n", "standby", "-d", d.Spec, d.Dev)
 		if err != nil && runner.ExitCode(err) == 2 {
-			// Drive in standby — don't wake it.
-			b.Add(fmt.Sprintf("d%d:zZ", i))
+			// Exit code 2 from `-n standby` is ambiguous: it means the
+			// drive is in STANDBY/SLEEP (don't wake it — tag zZ) OR
+			// smartctl hit an OpenDevice error, e.g. a RAID controller
+			// pulled a failed drive (tag x so a vanished drive is
+			// distinguishable from a sleeping one on the dashboard).
+			if standbyRE.MatchString(out) {
+				b.Add(fmt.Sprintf("d%d:zZ", i))
+			} else {
+				b.Add(fmt.Sprintf("d%d:x", i))
+			}
 			continue
 		}
 
@@ -212,24 +242,30 @@ func ParseSmartctlTemp(out string) (int, bool) {
 			return t, true
 		}
 	}
-	// 2. SATA attribute 194 (Temperature_Celsius). Bash:
-	//   awk '/^[[:space:]]*194[[:space:]]+Temperature/{print $10; exit}'
-	// Column 10 (1-indexed) is the RAW_VALUE column.
+	// 2. SATA attribute 194 (Temperature_Celsius) or 190
+	//   (Airflow_Temperature_Cel). Some SATA-over-SCSI / SAT-translated
+	//   drives report temperature only under 190, so accept either ID
+	//   whose attribute name contains "Temperature". Column 10 (1-indexed)
+	//   is the RAW_VALUE column.
 	for _, line := range strings.Split(out, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 10 {
 			continue
 		}
-		if fields[0] != "194" {
+		if fields[0] != "194" && fields[0] != "190" {
 			continue
 		}
-		if !strings.HasPrefix(fields[1], "Temperature") {
+		if !strings.Contains(fields[1], "Temperature") {
 			continue
 		}
 		if t, err := strconv.Atoi(fields[9]); err == nil && t > 0 {
 			return t, true
 		}
-		break // matched the row but couldn't parse — fall through
+		// This Temperature row didn't parse (e.g. a broken airflow sensor
+		// reporting attr 190 RAW=0). Keep scanning — a later valid 194 row
+		// may still carry the real temperature. (Was `break`, which silently
+		// suppressed a good 194 when a bad 190 preceded it.)
+		continue
 	}
 	// 3. NVMe.
 	if m := nvmeTempRE.FindStringSubmatch(out); m != nil {
@@ -242,3 +278,8 @@ func ParseSmartctlTemp(out string) (int, bool) {
 
 var scsiTempRE = regexp.MustCompile(`Current Drive Temperature:\s+(\d+)`)
 var nvmeTempRE = regexp.MustCompile(`Temperature:\s+(\d+)\s+Celsius`)
+
+// standbyRE distinguishes a genuine STANDBY/SLEEP exit-2 from an
+// OpenDevice-error exit-2 in `smartctl -A -n standby` output. Word
+// boundaries avoid matching substrings like "asleep"/"sleeping".
+var standbyRE = regexp.MustCompile(`(?i)\bSTANDBY\b|\bSLEEP\b`)

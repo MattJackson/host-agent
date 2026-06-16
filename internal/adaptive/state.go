@@ -41,8 +41,14 @@ const DefaultObserverPath = "/var/lib/host-agent/state/observer.json"
 // EWMAs are stored with full precision; serialized as JSON numbers
 // (no quoting).
 type ClassState struct {
-	TargetCelsius        float64   `json:"target_celsius"`
-	DeadbandCelsius      float64   `json:"deadband_celsius"`
+	TargetCelsius   float64 `json:"target_celsius"`
+	DeadbandCelsius float64 `json:"deadband_celsius"`
+	// VarianceObservedEWMA and InletBaselineCelsius are reserved by the
+	// design doc (§11) but NOT yet written by the reconciler — the live
+	// variance/inlet signals come from Observer.Stats() each cycle, not
+	// from persisted EWMAs. They round-trip through persistence so the
+	// schema is forward-compatible, but currently always hold their zero
+	// (or last-loaded) value. Do not assume they carry live data.
 	VarianceObservedEWMA float64   `json:"variance_observed_ewma"`
 	InletBaselineCelsius float64   `json:"inlet_baseline_celsius"`
 	LastUpdate           time.Time `json:"last_update"`

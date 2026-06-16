@@ -61,6 +61,20 @@ func TestSetFan_HexFormat(t *testing.T) {
 	}
 }
 
+func TestSetFan_NegativeFlooredToZero(t *testing.T) {
+	// A negative pct would format as the invalid byte "0x-5"; SetFan must
+	// floor it to 0 so the BMC gets a valid 0x00 (L1).
+	r := runner.NewFakeRunner()
+	c := New(r)
+	if err := c.SetFan(context.Background(), -5); err != nil {
+		t.Fatalf("SetFan(-5): %v", err)
+	}
+	want := []string{"raw", "0x30", "0x30", "0x02", "0xff", "0x00"}
+	if len(r.Calls) != 1 || !reflect.DeepEqual(r.Calls[0].Args, want) {
+		t.Errorf("SetFan(-5) args: got %+v want %v", r.Calls, want)
+	}
+}
+
 func TestEngageManualAndHandback(t *testing.T) {
 	r := runner.NewFakeRunner()
 	c := New(r)

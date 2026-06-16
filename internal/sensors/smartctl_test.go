@@ -173,6 +173,100 @@ func TestSmartctl_Read_StandbyDrive(t *testing.T) {
 	}
 }
 
+func TestParseSmartctlTemp_SATA_Attr190(t *testing.T) {
+	// Some SATA-over-SCSI / SAT-translated drives report temperature only
+	// under attribute 190 (Airflow_Temperature_Cel), not 194. Column 10
+	// (fields[9]) is the RAW_VALUE.
+	out := "ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE\n" +
+		"190 Airflow_Temperature_Cel 0x0022   071   045   000    Old_age   Always       -       29\n"
+	temp, ok := ParseSmartctlTemp(out)
+	if !ok || temp != 29 {
+		t.Errorf("SATA attr 190: got %d/%v want 29/true", temp, ok)
+	}
+}
+
+// TestParseSmartctlTemp_Attr190ZeroThen194 is the regression test for the
+// break→continue fix: a broken airflow sensor reports attr 190 with RAW=0
+// BEFORE a valid attr 194. The parser must keep scanning and return 194's
+// value, not bail out at the unparseable 190 row.
+func TestParseSmartctlTemp_Attr190ZeroThen194(t *testing.T) {
+	out := "ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE\n" +
+		"190 Airflow_Temperature_Cel 0x0022   071   045   000    Old_age   Always       -       0\n" +
+		"194 Temperature_Celsius     0x0022   035   050   000    Old_age   Always       -       35\n"
+	temp, ok := ParseSmartctlTemp(out)
+	if !ok || temp != 35 {
+		t.Errorf("190(RAW=0) then 194: got %d/%v want 35/true (must not stop at the bad 190 row)", temp, ok)
+	}
+}
+
+func TestStandbyRE_WordBoundaries(t *testing.T) {
+	match := []string{"Device is in STANDBY mode", "Device is in SLEEP mode", "device in standby"}
+	noMatch := []string{"device is asleep after command", "the drive was sleeping earlier", "No such device"}
+	for _, s := range match {
+		if !standbyRE.MatchString(s) {
+			t.Errorf("standbyRE should match %q", s)
+		}
+	}
+	for _, s := range noMatch {
+		if standbyRE.MatchString(s) {
+			t.Errorf("standbyRE should NOT match %q (substring false positive)", s)
+		}
+	}
+}
+
+func TestSmartctl_Probe_ClassifyError_SurfacesWarning(t *testing.T) {
+	// When `smartctl -i` fails, the drive can't be classified and defaults
+	// to SSD — the label must surface a warning so the operator knows the
+	// classification is unreliable (M1).
+	r := runner.NewFakeRunner()
+	r.Set("smartctl", []string{"--scan"}, runner.FakeResponse{
+		Output: "/dev/sda -d scsi # /dev/sda, SCSI device\n",
+	})
+	r.Set("smartctl", []string{"-i", "-d", "scsi", "/dev/sda"},
+		runner.FakeResponse{ExitCode: 1}) // classification fails
+
+	s := NewSmartctl(r)
+	label, fatal := s.Probe(context.Background(), "auto")
+	if fatal {
+		t.Fatalf("unexpected fatal: %s", label)
+	}
+	if len(s.Drives) != 1 || s.Drives[0].Type != DriveSSD {
+		t.Fatalf("drive should default to SSD on classify failure, got %+v", s.Drives)
+	}
+	if !contains(label, "WARN") || !contains(label, "classification") {
+		t.Errorf("label should warn about classification failure, got %q", label)
+	}
+}
+
+func TestSmartctl_Read_Exit2_MissingDevice_NotStandby(t *testing.T) {
+	// Exit code 2 without a STANDBY/SLEEP marker means an OpenDevice error
+	// (e.g. a pulled drive), NOT standby — it must be tagged as a read
+	// error (x), not silenced as zZ (M2).
+	r := runner.NewFakeRunner()
+	r.Set("smartctl", []string{"-A", "-n", "standby", "-d", "scsi", "/dev/sda"},
+		runner.FakeResponse{Output: "Smartctl open device: /dev/sda failed: No such device", ExitCode: 2})
+	s := &Smartctl{
+		Runner:       r,
+		Drives:       []Drive{{Dev: "/dev/sda", Spec: "scsi", Type: DriveHDD}},
+		Enabled:      true,
+		ReadInterval: 60 * time.Second,
+		Now:          func() time.Time { return time.Unix(3000, 0) },
+	}
+	hdd, _, deets, ok := s.Read(context.Background())
+	if !ok {
+		t.Fatal("ok=false")
+	}
+	if hdd != 0 {
+		t.Errorf("missing drive should yield max=0, got %d", hdd)
+	}
+	if contains(deets, "zZ") {
+		t.Errorf("missing (non-standby) drive must NOT be tagged zZ, got %q", deets)
+	}
+	if !contains(deets, "d0:x") {
+		t.Errorf("missing drive should be tagged d0:x, got %q", deets)
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

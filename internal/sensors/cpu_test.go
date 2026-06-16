@@ -85,3 +85,13 @@ func TestCPU_Read_NoSourcesReturnsNotOk(t *testing.T) {
 		t.Error("no coretemp + no IPMI should yield ok=false")
 	}
 }
+
+func TestNewCPU_Defaults(t *testing.T) {
+	c := NewCPU(runner.NewFakeRunner(), fstestAdapter{fstest.MapFS{}})
+	if c.HwmonRoot != "/sys/class/hwmon" {
+		t.Errorf("HwmonRoot=%q, want /sys/class/hwmon", c.HwmonRoot)
+	}
+	if c.Runner == nil || c.Filesystem == nil {
+		t.Error("NewCPU should populate Runner and Filesystem")
+	}
+}

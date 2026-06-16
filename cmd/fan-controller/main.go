@@ -72,7 +72,6 @@ func main() {
 		logger.Printf("FATAL: profile load: %v", err)
 		os.Exit(1)
 	}
-	logActiveProfile(logger, cfg)
 
 	m, modeSet, modeErr := config.ApplyMode(cfg)
 	if modeErr != nil {
@@ -82,7 +81,17 @@ func main() {
 	} else {
 		logger.Printf("HOST_AGENT_MODE unset; using v1 profile values + %s defaults for any unset class", m)
 	}
+	// Log the effective config once, after mode resolution (the pre-mode
+	// snapshot is identical on the v1 path and just duplicates the line).
 	logActiveProfile(logger, cfg)
+
+	// Fail closed on dangerous/incoherent config (validated post-ApplyMode,
+	// since mode fills per-class targets). Refusing to start hands fans to
+	// iDRAC automatic — safe, if louder — rather than running unsafe bounds.
+	if err := config.Validate(cfg); err != nil {
+		logger.Printf("FATAL: %v", err)
+		os.Exit(1)
+	}
 
 	// 2b: Build adaptive observer + restore prior window from disk so
 	// learnings (sample window, inlet baseline) survive container
@@ -154,15 +163,16 @@ func main() {
 
 	var recon *adaptive.Reconciler
 	if !adaptiveDisabled {
-		recon, err = adaptive.NewReconciler(adaptive.ReconcilerOptions{
+		reconErr := error(nil)
+		recon, reconErr = adaptive.NewReconciler(adaptive.ReconcilerOptions{
 			Observer:          obs,
 			Mode:              m,
 			StatePath:         statePath,
 			WindowSize:        windowSize,
 			PerClassOverrides: perClassOverrides,
 		})
-		if err != nil {
-			logger.Printf("WARN: failed to build reconciler: %v (adaptive disabled)", err)
+		if reconErr != nil {
+			logger.Printf("WARN: failed to build reconciler: %v (adaptive disabled)", reconErr)
 			adaptiveDisabled = true
 		} else {
 			logger.Printf("adaptive reconciler: active, cycle=%dmin, state=%s, overrides=%v", adaptiveCycleMin, statePath, overrideClasses)
@@ -250,11 +260,15 @@ func main() {
 		select {
 		case <-ctx.Done():
 			logger.Printf("Shutting down — returning fan control to iDRAC automatic")
-			_ = c.PersistState()
+			if err := c.PersistState(); err != nil {
+				logger.Printf("WARN: shutdown persist state: %v", err)
+			}
 			// Use a fresh context for the handback — the parent context
 			// is already cancelled, but ipmitool still needs ~100ms.
 			handbackCtx, hcancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = ipmiClient.HandbackAuto(handbackCtx)
+			if err := ipmiClient.HandbackAuto(handbackCtx); err != nil {
+				logger.Printf("WARN: shutdown handback to iDRAC auto: %v", err)
+			}
 			hcancel()
 			return
 		case <-ticker.C:
@@ -281,6 +295,9 @@ func runCycle(ctx context.Context, c *controller.Controller) {
 	// the whole cycle at 60s in case multiple subprocess calls stack.
 	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
+	// Cycle never returns an error — it handles its own fail-safe (on a
+	// CPU-read failure it commands 100% fans) and returns the metrics
+	// Snapshot, which main writes via the controller's own metricsFile.
 	_ = c.Cycle(cctx)
 }
 
@@ -434,6 +451,7 @@ func (osFS) ReadDir(name string) ([]fs.DirEntry, error) {
 //
 // Exits when ctx is cancelled.
 func runAdaptiveLoop(ctx context.Context, logger controller.Logger, r *adaptive.Reconciler, lt *livetargets.Store, t *time.Ticker) {
+	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():

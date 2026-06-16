@@ -2,11 +2,171 @@ package adaptive
 
 import (
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/pq/docker-server/host-agent/internal/envelope"
 )
+
+func TestPercentileIndex(t *testing.T) {
+	cases := []struct {
+		p, n, want int
+	}{
+		{10, 10, 1}, // round(0.10*9)=1
+		{50, 10, 5}, // round(0.50*9)=round(4.5)=5 (half-up)
+		{90, 10, 8}, // round(0.90*9)=round(8.1)=8
+		{90, 1, 0},  // n=1 → idx clamps to 0
+		{50, 1, 0},  // n=1
+		{100, 5, 4}, // round(1.0*4)=4 = n-1, no clamp needed
+		{0, 5, 0},   // round(0)=0
+		{100, 100, 99},
+	}
+	for _, c := range cases {
+		if got := percentileIndex(c.p, c.n); got != c.want {
+			t.Errorf("percentileIndex(%d, %d) = %d, want %d", c.p, c.n, got, c.want)
+		}
+	}
+}
+
+// TestObserver_LoadFrom_CorruptAndVersion covers the decode-error and
+// version-mismatch branches of LoadFrom.
+func TestObserver_LoadFrom_CorruptAndVersion(t *testing.T) {
+	dir := t.TempDir()
+
+	// Corrupt JSON → (false, err).
+	corrupt := filepath.Join(dir, "corrupt.json")
+	if err := os.WriteFile(corrupt, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o := NewObserver(10, 10.0)
+	if loaded, err := o.LoadFrom(corrupt); loaded || err == nil {
+		t.Errorf("corrupt file: got (loaded=%v, err=%v), want (false, non-nil)", loaded, err)
+	}
+
+	// Version mismatch → (false, err).
+	badVer := filepath.Join(dir, "ver.json")
+	if err := os.WriteFile(badVer, []byte(`{"version":99999,"window_size":10}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if loaded, err := o.LoadFrom(badVer); loaded || err == nil {
+		t.Errorf("version mismatch: got (loaded=%v, err=%v), want (false, non-nil)", loaded, err)
+	}
+}
+
+// TestObserver_SaveTo_BadPath covers the SaveTo mkdir/write error path.
+func TestObserver_SaveTo_BadPath(t *testing.T) {
+	o := NewObserver(10, 10.0)
+	o.Add(envelope.CPU, Sample{Timestamp: time.Now(), TempCelsius: 60, FanDemandPct: 50, InletCelsius: 22})
+	// A path whose parent is an existing file (not a dir) makes MkdirAll fail.
+	f := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.SaveTo(filepath.Join(f, "observer.json")); err == nil {
+		t.Error("SaveTo into a path under a regular file should error")
+	}
+}
+
+// TestObserver_SaveTo_LoadFrom_RoundTrip exercises persistence: samples
+// saved by one observer restore into a fresh one (T1).
+func TestObserver_SaveTo_LoadFrom_RoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "observer.json")
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+
+	o1 := NewObserver(10, 10.0)
+	for i := 0; i < 6; i++ {
+		o1.Add(envelope.PassiveGPU, Sample{
+			Timestamp:    now.Add(time.Duration(i) * time.Second),
+			TempCelsius:  float64(80 + i),
+			FanDemandPct: 90 + i,
+			InletCelsius: 22.0,
+		})
+	}
+	if err := o1.SaveTo(path); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	o2 := NewObserver(10, 10.0)
+	loaded, err := o2.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if !loaded {
+		t.Fatal("LoadFrom returned loaded=false for a valid snapshot")
+	}
+	if got := o2.Stats(envelope.PassiveGPU); got.Samples != 6 {
+		t.Errorf("restored Samples=%d, want 6", got.Samples)
+	}
+	if a, b := o1.Stats(envelope.PassiveGPU), o2.Stats(envelope.PassiveGPU); a.TempMean != b.TempMean || a.FanDemandP90 != b.FanDemandP90 {
+		t.Errorf("stats mismatch after round-trip: orig=%+v restored=%+v", a, b)
+	}
+}
+
+// TestObserver_LoadFrom_Missing_And_WindowMismatch covers the two
+// loaded=false paths (T1).
+func TestObserver_LoadFrom_Missing_And_WindowMismatch(t *testing.T) {
+	dir := t.TempDir()
+
+	// Missing file → (false, nil).
+	o := NewObserver(10, 10.0)
+	loaded, err := o.LoadFrom(filepath.Join(dir, "nope.json"))
+	if loaded || err != nil {
+		t.Errorf("missing file: got (loaded=%v, err=%v), want (false, nil)", loaded, err)
+	}
+
+	// Window-size mismatch → (false, err).
+	path := filepath.Join(dir, "observer.json")
+	src := NewObserver(10, 10.0)
+	src.Add(envelope.CPU, Sample{Timestamp: time.Now(), TempCelsius: 60, FanDemandPct: 50, InletCelsius: 22})
+	if err := src.SaveTo(path); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	other := NewObserver(20, 10.0) // different window size
+	loaded, err = other.LoadFrom(path)
+	if loaded || err == nil {
+		t.Errorf("window mismatch: got (loaded=%v, err=%v), want (false, non-nil)", loaded, err)
+	}
+}
+
+// TestObserver_Reset_ThenInletJump verifies a reset class behaves
+// correctly when the very next sample triggers an inlet-jump reset (T3).
+func TestObserver_Reset_ThenInletJump(t *testing.T) {
+	o := NewObserver(10, 10.0)
+	now := time.Now()
+	// Seed so haveLastInlet is true.
+	o.Add(envelope.CPU, Sample{Timestamp: now, TempCelsius: 60, FanDemandPct: 50, InletCelsius: 22})
+	o.Reset(envelope.CPU)
+
+	// Next sample with a large inlet jump (>10°C).
+	accepted, reset := o.Add(envelope.CPU, Sample{
+		Timestamp: now.Add(time.Second), TempCelsius: 61, FanDemandPct: 51, InletCelsius: 40,
+	})
+	if !accepted {
+		t.Error("sample after reset should be accepted")
+	}
+	if !reset {
+		t.Error("large inlet jump should report reset=true")
+	}
+	if got := o.Stats(envelope.CPU); got.Samples != 1 {
+		t.Errorf("Samples=%d after reset+jump, want 1", got.Samples)
+	}
+}
+
+// TestObserver_Stats_SingleSample_Percentiles asserts all percentiles
+// equal the single value when n=1 (T2).
+func TestObserver_Stats_SingleSample_Percentiles(t *testing.T) {
+	o := NewObserver(10, 10.0)
+	o.Add(envelope.CPU, Sample{Timestamp: time.Now(), TempCelsius: 73, FanDemandPct: 88, InletCelsius: 22})
+	s := o.Stats(envelope.CPU)
+	if s.TempP10 != 73 || s.TempP50 != 73 || s.TempP90 != 73 {
+		t.Errorf("n=1 temp percentiles = %v/%v/%v, want all 73", s.TempP10, s.TempP50, s.TempP90)
+	}
+	if s.FanDemandP90 != 88 {
+		t.Errorf("n=1 FanDemandP90 = %v, want 88", s.FanDemandP90)
+	}
+}
 
 func TestObserver_Add_AcceptsValid(t *testing.T) {
 	o := NewObserver(480, 10)

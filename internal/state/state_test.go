@@ -8,6 +8,55 @@ import (
 	"time"
 )
 
+// TestRead_SkipsMalformedAndComments covers Read's parse branches: comment
+// lines, blank lines, lines without '=', quoted values, and malformed
+// numerics (silently skipped, leaving the zero value).
+func TestRead_SkipsMalformedAndComments(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state")
+	content := "" +
+		"# a comment\n" +
+		"\n" +
+		"garbage-without-equals\n" +
+		"=leadingequals\n" + // eq<=0 → skipped
+		"base_speed=\"37.5\"\n" + // quoted → stripped
+		"last_speed=not-a-number\n" + // malformed → skipped, stays 0
+		"samples=42\n" +
+		"last_updated=2026-05-15T17:30:00Z\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Read(path)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if s.BaseSpeed != 37.5 {
+		t.Errorf("BaseSpeed=%v, want 37.5 (quoted value stripped)", s.BaseSpeed)
+	}
+	if s.LastSpeed != 0 {
+		t.Errorf("LastSpeed=%v, want 0 (malformed value skipped)", s.LastSpeed)
+	}
+	if s.Samples != 42 {
+		t.Errorf("Samples=%v, want 42", s.Samples)
+	}
+	if s.LastUpdated.IsZero() {
+		t.Error("LastUpdated should have parsed")
+	}
+}
+
+// TestWrite_MkdirFails covers the Write mkdir-error path.
+func TestWrite_MkdirFails(t *testing.T) {
+	// Parent is a regular file, so MkdirAll for a subpath fails.
+	f := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := Write(filepath.Join(f, "sub", "state"), State{BaseSpeed: 50})
+	if err == nil {
+		t.Error("Write under a regular-file parent should error")
+	}
+}
+
 func TestWrite_ByteIdenticalToGolden(t *testing.T) {
 	// The bash original writes:
 	//   base_speed=37.4221

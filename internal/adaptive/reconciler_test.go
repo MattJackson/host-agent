@@ -4,6 +4,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -764,6 +765,101 @@ func TestReconciler_Step_DownDriftStillWorks_WithFanHeadroom(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no PassiveGPU action returned")
+	}
+}
+
+// TestReconciler_Step_MissingEnvelope_ReasonError covers the !envOK path:
+// a class managed by the reconciler but absent from Envelopes yields
+// DriftReasonError without mutating its target (T4).
+func TestReconciler_Step_MissingEnvelope_ReasonError(t *testing.T) {
+	o := NewObserver(5, 10.0)
+	nowBase := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+
+	r, err := NewReconciler(ReconcilerOptions{
+		Observer:   o,
+		Mode:       mode.Balanced,
+		WindowSize: 5,
+		// Only CPU has an envelope; PassiveGPU/HDD/SSD are missing.
+		Envelopes: map[envelope.Class]envelope.Envelope{
+			envelope.CPU: envelope.DefaultEnvelopes[envelope.CPU],
+		},
+		Now: func() time.Time { return nowBase },
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler failed: %v", err)
+	}
+
+	actions, err := r.Step()
+	if err != nil {
+		t.Fatalf("Step failed: %v", err)
+	}
+
+	for _, a := range actions {
+		if a.Class == envelope.PassiveGPU {
+			if a.Reason != DriftReasonError {
+				t.Errorf("missing envelope: Reason=%s, want %s", a.Reason, DriftReasonError)
+			}
+			if a.NewTarget != a.OldTarget {
+				t.Errorf("missing envelope: target changed %d→%d, want unchanged", a.OldTarget, a.NewTarget)
+			}
+		}
+	}
+}
+
+// TestReconciler_Step_BoundedHigh_CountedInMetrics verifies the v0.3.9
+// observability fix: a cycle that wants to drift up but is pinned at the
+// MaxSafe-1 ceiling increments the "bounded_high" direction counter
+// (distinct from "up" so actual-drift counts stay exact).
+func TestReconciler_Step_BoundedHigh_CountedInMetrics(t *testing.T) {
+	o := NewObserver(5, 10.0)
+	nowBase := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+
+	// Saturated PassiveGPU pinned at MaxFan to create sustained up-pressure.
+	for i := 0; i < 5; i++ {
+		o.Add(envelope.PassiveGPU, Sample{
+			Timestamp:    nowBase.Add(time.Duration(i) * 30 * time.Second),
+			TempCelsius:  82.0,
+			FanDemandPct: 99,
+			InletCelsius: 22.0,
+		})
+	}
+	r, err := NewReconciler(ReconcilerOptions{
+		Observer:   o,
+		Mode:       mode.MinNoise,
+		WindowSize: 5,
+		Now:        func() time.Time { return nowBase.Add(time.Minute) },
+	})
+	if err != nil {
+		t.Fatalf("NewReconciler failed: %v", err)
+	}
+	env := envelope.DefaultEnvelopes[envelope.PassiveGPU]
+
+	// Pre-set target at the ceiling so the up-pressure is bounded.
+	r.mu.Lock()
+	cs := r.state.Classes[envelope.PassiveGPU]
+	cs.TargetCelsius = float64(env.MaxSafe - 1)
+	cs.LastUpdate = nowBase.Add(time.Minute)
+	r.state.Classes[envelope.PassiveGPU] = cs
+	r.mu.Unlock()
+
+	if _, err := r.Step(); err != nil {
+		t.Fatalf("Step failed: %v", err)
+	}
+
+	m := r.Metrics()
+	if got := m.Drifts[envelope.PassiveGPU]["bounded_high"]; got != 1 {
+		t.Errorf("bounded_high counter = %d, want 1", got)
+	}
+	if got := m.Drifts[envelope.PassiveGPU]["up"]; got != 0 {
+		t.Errorf("up counter = %d, want 0 (bound is not an actual drift)", got)
+	}
+
+	// The counter must also REACH the Prometheus output — not just the
+	// in-memory map. (A prior version accumulated the key but the renderer
+	// iterated a hardcoded ["up","down"] slice, silently dropping it.)
+	out := string(RenderReconcilerMetrics(r, o))
+	if !strings.Contains(out, `adaptive_target_drifts_total{class="passive_gpu",direction="bounded_high"} 1`) {
+		t.Errorf("rendered metrics missing bounded_high series; got:\n%s", out)
 	}
 }
 

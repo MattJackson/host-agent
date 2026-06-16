@@ -177,49 +177,57 @@ func Load(profileDir, model string, lookupEnv func(string) (string, bool), logge
 
 	// Build typed Config from raw map.
 	cfg := &Config{Raw: raw}
-	bindInt(raw, "INTERVAL", &cfg.IntervalSec)
-	bindString(raw, "GPU_AWARE", &cfg.GPUAware)
-	bindString(raw, "HDD_AWARE", &cfg.HDDAware)
+	b := &binder{raw: raw}
+	b.Int("INTERVAL", &cfg.IntervalSec)
+	b.Str("GPU_AWARE", &cfg.GPUAware)
+	b.Str("HDD_AWARE", &cfg.HDDAware)
 
-	bindInt(raw, "CPU_TARGET", &cfg.CPUTarget)
-	bindInt(raw, "CPU_DEADBAND", &cfg.CPUDeadband)
-	bindInt(raw, "CPU_EMERGENCY", &cfg.CPUEmergency)
-	bindInt(raw, "CPU_APPROACH_WINDOW", &cfg.CPUApproachWindow)
+	b.Int("CPU_TARGET", &cfg.CPUTarget)
+	b.Int("CPU_DEADBAND", &cfg.CPUDeadband)
+	b.Int("CPU_EMERGENCY", &cfg.CPUEmergency)
+	b.Int("CPU_APPROACH_WINDOW", &cfg.CPUApproachWindow)
 
-	bindInt(raw, "GPU_TARGET", &cfg.GPUTarget)
-	bindInt(raw, "GPU_DEADBAND", &cfg.GPUDeadband)
-	bindInt(raw, "GPU_EMERGENCY", &cfg.GPUEmergency)
-	bindInt(raw, "GPU_APPROACH_WINDOW", &cfg.GPUApproachWindow)
+	b.Int("GPU_TARGET", &cfg.GPUTarget)
+	b.Int("GPU_DEADBAND", &cfg.GPUDeadband)
+	b.Int("GPU_EMERGENCY", &cfg.GPUEmergency)
+	b.Int("GPU_APPROACH_WINDOW", &cfg.GPUApproachWindow)
 
-	bindInt(raw, "ACTIVE_GPU_OWN_FAN_THRESHOLD", &cfg.ActiveGPUOwnFanThreshold)
-	bindInt(raw, "ACTIVE_GPU_EMERGENCY", &cfg.ActiveGPUEmergency)
+	b.Int("ACTIVE_GPU_OWN_FAN_THRESHOLD", &cfg.ActiveGPUOwnFanThreshold)
+	b.Int("ACTIVE_GPU_EMERGENCY", &cfg.ActiveGPUEmergency)
 
-	bindInt(raw, "HDD_TARGET", &cfg.HDDTarget)
-	bindInt(raw, "HDD_DEADBAND", &cfg.HDDDeadband)
-	bindInt(raw, "HDD_EMERGENCY", &cfg.HDDEmergency)
-	bindInt(raw, "HDD_APPROACH_WINDOW", &cfg.HDDApproachWindow)
-	bindInt(raw, "HDD_READ_INTERVAL", &cfg.HDDReadInterval)
+	b.Int("HDD_TARGET", &cfg.HDDTarget)
+	b.Int("HDD_DEADBAND", &cfg.HDDDeadband)
+	b.Int("HDD_EMERGENCY", &cfg.HDDEmergency)
+	b.Int("HDD_APPROACH_WINDOW", &cfg.HDDApproachWindow)
+	b.Int("HDD_READ_INTERVAL", &cfg.HDDReadInterval)
 
-	bindInt(raw, "SSD_TARGET", &cfg.SSDTarget)
-	bindInt(raw, "SSD_DEADBAND", &cfg.SSDDeadband)
-	bindInt(raw, "SSD_EMERGENCY", &cfg.SSDEmergency)
-	bindInt(raw, "SSD_APPROACH_WINDOW", &cfg.SSDApproachWindow)
+	b.Int("SSD_TARGET", &cfg.SSDTarget)
+	b.Int("SSD_DEADBAND", &cfg.SSDDeadband)
+	b.Int("SSD_EMERGENCY", &cfg.SSDEmergency)
+	b.Int("SSD_APPROACH_WINDOW", &cfg.SSDApproachWindow)
 
-	bindInt(raw, "MIN_FAN", &cfg.MinFan)
-	bindInt(raw, "MAX_FAN", &cfg.MaxFan)
-	bindFloat(raw, "FAN_GAIN", &cfg.FanGain)
-	bindFloat(raw, "DERIVATIVE_GAIN", &cfg.DerivativeGain)
-	bindInt(raw, "DEADBAND_DRIFT_RATE", &cfg.DeadbandDriftRate)
-	bindFloat(raw, "ADAPT_ALPHA", &cfg.AdaptAlpha)
+	b.Int("MIN_FAN", &cfg.MinFan)
+	b.Int("MAX_FAN", &cfg.MaxFan)
+	b.Float("FAN_GAIN", &cfg.FanGain)
+	b.Float("DERIVATIVE_GAIN", &cfg.DerivativeGain)
+	b.Int("DEADBAND_DRIFT_RATE", &cfg.DeadbandDriftRate)
+	b.Float("ADAPT_ALPHA", &cfg.AdaptAlpha)
 
-	bindString(raw, "SENSOR_CPU1_NAME", &cfg.SensorCPU1Name)
-	bindString(raw, "SENSOR_CPU1_ID", &cfg.SensorCPU1ID)
-	bindString(raw, "SENSOR_CPU2_NAME", &cfg.SensorCPU2Name)
-	bindString(raw, "SENSOR_CPU2_ID", &cfg.SensorCPU2ID)
-	bindString(raw, "SENSOR_INLET_NAME", &cfg.SensorInletName)
-	bindString(raw, "SENSOR_INLET_ID", &cfg.SensorInletID)
-	bindString(raw, "SENSOR_EXHAUST_NAME", &cfg.SensorExhaustName)
-	bindString(raw, "SENSOR_EXHAUST_ID", &cfg.SensorExhaustID)
+	b.Str("SENSOR_CPU1_NAME", &cfg.SensorCPU1Name)
+	b.Str("SENSOR_CPU1_ID", &cfg.SensorCPU1ID)
+	b.Str("SENSOR_CPU2_NAME", &cfg.SensorCPU2Name)
+	b.Str("SENSOR_CPU2_ID", &cfg.SensorCPU2ID)
+	b.Str("SENSOR_INLET_NAME", &cfg.SensorInletName)
+	b.Str("SENSOR_INLET_ID", &cfg.SensorInletID)
+	b.Str("SENSOR_EXHAUST_NAME", &cfg.SensorExhaustName)
+	b.Str("SENSOR_EXHAUST_ID", &cfg.SensorExhaustID)
+
+	// Surface malformed numeric values — previously swallowed silently.
+	if logger != nil {
+		for _, e := range b.errs {
+			logger.Printf("WARN: config: %s", e)
+		}
+	}
 
 	if cfg.GPUAware == "" {
 		cfg.GPUAware = "auto"
@@ -231,26 +239,105 @@ func Load(profileDir, model string, lookupEnv func(string) (string, bool), logge
 	return cfg, nil
 }
 
-func bindInt(raw map[string]string, key string, dst *int) {
-	if v, ok := raw[key]; ok {
+// binder binds raw string values into typed Config fields, accumulating
+// a warning for any present-but-malformed numeric value. Pre-v0.3.9 the
+// bind helpers silently swallowed parse errors: a profile typo like
+// FAN_GAIN=abc left the field at its zero value with no signal to the
+// operator (and FanGain=0 disables proportional gain entirely). Now the
+// failure is surfaced — logged by Load, and any dangerous resulting value
+// is rejected by validate().
+type binder struct {
+	raw  map[string]string
+	errs []string
+}
+
+func (b *binder) Int(key string, dst *int) {
+	if v, ok := b.raw[key]; ok {
 		if i, err := strconv.Atoi(v); err == nil {
 			*dst = i
+		} else {
+			b.errs = append(b.errs, fmt.Sprintf("%s=%q: not an integer (keeping default %d)", key, v, *dst))
 		}
 	}
 }
 
-func bindFloat(raw map[string]string, key string, dst *float64) {
-	if v, ok := raw[key]; ok {
+func (b *binder) Float(key string, dst *float64) {
+	if v, ok := b.raw[key]; ok {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			*dst = f
+		} else {
+			b.errs = append(b.errs, fmt.Sprintf("%s=%q: not a number (keeping default %g)", key, v, *dst))
 		}
 	}
 }
 
-func bindString(raw map[string]string, key string, dst *string) {
-	if v, ok := raw[key]; ok {
+func (b *binder) Str(key string, dst *string) {
+	if v, ok := b.raw[key]; ok {
 		*dst = v
 	}
+}
+
+// Validate enforces the safety invariants that protect the hardware. A
+// violation returns an error so the caller fails closed — refusing to
+// start leaves fans under iDRAC automatic control (safe, if louder),
+// which is strictly better than running with an incoherent config (e.g.
+// MaxFan=0, or an emergency threshold below the target the PID chases).
+//
+// Call this AFTER ApplyMode: in the HOST_AGENT_MODE path the per-class
+// targets/deadbands are filled by ApplyMode, not by Load, so validating
+// the pre-mode config would spuriously reject a mode-only deployment.
+// Load itself stays pure resolution (it does not validate) so callers
+// can inspect partially-resolved configs.
+func Validate(c *Config) error {
+	var errs []string
+	if !(c.MinFan > 0 && c.MinFan <= c.MaxFan && c.MaxFan <= 100) {
+		errs = append(errs, fmt.Sprintf("fan range invalid: need 0 < MIN_FAN(%d) <= MAX_FAN(%d) <= 100", c.MinFan, c.MaxFan))
+	}
+	if c.IntervalSec <= 0 {
+		errs = append(errs, fmt.Sprintf("INTERVAL must be > 0 (got %d)", c.IntervalSec))
+	}
+	if c.FanGain <= 0 {
+		errs = append(errs, fmt.Sprintf("FAN_GAIN must be > 0 (got %g)", c.FanGain))
+	}
+	if !(c.AdaptAlpha > 0 && c.AdaptAlpha < 1) {
+		errs = append(errs, fmt.Sprintf("ADAPT_ALPHA must be in (0,1) (got %g)", c.AdaptAlpha))
+	}
+	// Per-class target-below-emergency. ActiveGPU is excluded — it has no
+	// temperature target (own-fan-driven), only an emergency.
+	//
+	// The invariant is target < emergency, NOT target+deadband < emergency.
+	// A PID target at or above its own emergency trip is genuinely broken
+	// (the loop would aim for a temp that instantly forces 100% fans). But
+	// the deadband top crossing emergency is SAFE and intentional for the
+	// hot-and-quiet modes: eco sets target+deadband == emergency exactly
+	// (CPU 75+5 vs 80, SSD 60+5 vs 65). That's inert because the controller
+	// evaluates the emergency threshold FIRST every cycle and forces full
+	// fans before the PID ever consults the deadband — observed temp can
+	// never sit inside the deadband above emergency. Requiring
+	// target+deadband < emergency here would (wrongly) reject eco/min-noise
+	// at startup on the default profile.
+	classes := []struct {
+		name             string
+		target, dead, em int
+	}{
+		{"CPU", c.CPUTarget, c.CPUDeadband, c.CPUEmergency},
+		{"GPU", c.GPUTarget, c.GPUDeadband, c.GPUEmergency},
+		{"HDD", c.HDDTarget, c.HDDDeadband, c.HDDEmergency},
+		{"SSD", c.SSDTarget, c.SSDDeadband, c.SSDEmergency},
+	}
+	for _, cl := range classes {
+		if cl.target <= 0 || cl.dead < 0 || cl.em <= 0 {
+			errs = append(errs, fmt.Sprintf("%s: target(%d)/deadband(%d)/emergency(%d) must be positive", cl.name, cl.target, cl.dead, cl.em))
+			continue
+		}
+		if cl.target >= cl.em {
+			errs = append(errs, fmt.Sprintf("%s: target (%d) must stay below emergency (%d)", cl.name, cl.target, cl.em))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("config validation failed: %s", strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 // parseProfile reads from r and calls setDefault for each KEY=VAL line.

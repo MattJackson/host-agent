@@ -155,7 +155,7 @@ type Reconciler struct {
 	classes []envelope.Class // stable order for action emission
 
 	// driftsByClassDirection is the per-Step accumulating counter state for drift direction. Updated inside Step() while r.mu is held. Read via Metrics().
-	driftsByClassDirection map[envelope.Class]map[string]int64 // direction: "up", "down"
+	driftsByClassDirection map[envelope.Class]map[string]int64 // direction: "up", "down", "bounded_high", "bounded_low"
 
 	// resetsByClassReason is the per-Step accumulating counter state for reset reasons. Updated inside Step() while r.mu is held. Read via Metrics().
 	resetsByClassReason map[envelope.Class]map[DriftReason]int64
@@ -315,7 +315,12 @@ func (r *Reconciler) Metrics() ReconcilerMetrics {
 // State is persisted to disk after the pass (best-effort; persistence
 // errors are returned but the in-memory state is still updated).
 //
-// Concurrency: Step takes the reconciler mutex for the entire pass.
+// Concurrency: Step takes the reconciler mutex (r.mu) for the entire pass
+// and, inside reconcileClass, calls Observer.Stats() which takes the
+// observer mutex (o.mu). The lock order is therefore r.mu → o.mu. The
+// metrics renderer (RenderReconcilerMetrics) follows the same order
+// (r.Metrics() then obs.Stats()). Any future caller acquiring o.mu before
+// r.mu would invert this order and risk deadlock — don't.
 func (r *Reconciler) Step() ([]DriftAction, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -463,6 +468,12 @@ func (r *Reconciler) reconcileClass(class envelope.Class, now time.Time) DriftAc
 	// below observed equilibrium just makes the PID fight harder, and
 	// there's no "anti-saturation" signal pulling target into the cold
 	// zone the way saturation does on the hot side.
+	// The two clamp blocks are mutually exclusive for any valid envelope
+	// (PreferredLow < MaxSafe-1), so at most one fires and the bounded
+	// reason is never overwritten. The bestDelta>0 / bestDelta<0 guards
+	// mean a clamp that doesn't correspond to the drift direction (e.g.
+	// already-at-ceiling with bestDelta==0) leaves Reason empty, falling
+	// through to DriftReasonSettled below.
 	highClamp := env.MaxSafe - 1
 	newTarget := action.OldTarget + bestDelta
 	if newTarget > highClamp {
@@ -490,6 +501,15 @@ func (r *Reconciler) reconcileClass(class envelope.Class, now time.Time) DriftAc
 	action.NewTarget = newTarget
 
 	// Deadband: max(mode-default, ceil(stddev*1.5)), capped at MaxDeadbandC.
+	//
+	// Note: target (≤ MaxSafe-1) + MaxDeadbandC can nominally exceed
+	// Emergency for tight envelopes (e.g. PassiveGPU: 84 + 7 = 91 > 90).
+	// This is safe because the controller checks the emergency threshold
+	// FIRST every cycle and forces full fans before the PID ever evaluates
+	// the deadband — observed temp can never sit in the deadband above
+	// Emergency. The deadband only governs how far below target the PID
+	// eases off, so the overshoot of the *upper* deadband edge past
+	// Emergency is inert.
 	_, modeDefaultDeadband := mode.InitialTarget(env, r.o.Mode)
 	desiredDeadband := int(math.Ceil(stats.TempStdDev * 1.5))
 	if desiredDeadband < modeDefaultDeadband {
@@ -509,13 +529,24 @@ func (r *Reconciler) reconcileClass(class envelope.Class, now time.Time) DriftAc
 	}
 	r.state.Classes[class] = cs
 
+	// Directional drift counters. "up"/"down" count actual target changes;
+	// "bounded_high"/"bounded_low" count cycles where the score wanted to
+	// drift but the target was already pinned at a clamp — distinct keys so
+	// actual drift counts stay exact while perpetual bound pressure (a key
+	// envelope-misconfiguration signal) is still visible on dashboards.
+	//
+	// The variance-reset counter is incremented at its detection point
+	// (see above), which returns early — so it is intentionally absent here;
+	// a case for it would be dead code and a future double-count hazard.
 	switch action.Reason {
 	case DriftReasonUp:
 		r.driftsByClassDirection[class]["up"]++
 	case DriftReasonDown:
 		r.driftsByClassDirection[class]["down"]++
-	case DriftReasonVarianceReset:
-		r.resetsByClassReason[class][DriftReasonVarianceReset]++
+	case DriftReasonBoundedHigh:
+		r.driftsByClassDirection[class]["bounded_high"]++
+	case DriftReasonBoundedLow:
+		r.driftsByClassDirection[class]["bounded_low"]++
 	}
 	return action
 }

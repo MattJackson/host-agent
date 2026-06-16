@@ -12,6 +12,7 @@ import (
 	"github.com/pq/docker-server/host-agent/internal/ipmi"
 	"github.com/pq/docker-server/host-agent/internal/runner"
 	"github.com/pq/docker-server/host-agent/internal/sensors"
+	"github.com/pq/docker-server/host-agent/internal/state"
 )
 
 // stubReader returns a fixed Reading.
@@ -75,6 +76,52 @@ func newTestController(t *testing.T, cfg *config.Config, reader *stubReader) *Co
 	c.PersistInterval = 60 * time.Second
 	c.Now = func() time.Time { return time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC) }
 	return c
+}
+
+func TestLoadState(t *testing.T) {
+	cfg := defaultCfg(t)
+
+	t.Run("missing file → MinFan", func(t *testing.T) {
+		c := newTestController(t, cfg, &stubReader{readings: []sensors.Reading{{CPUMax: 50}}, oks: []bool{true}})
+		c.StatePath = filepath.Join(t.TempDir(), "nope")
+		c.LoadState()
+		if c.CurrentSpeed != cfg.MinFan {
+			t.Errorf("CurrentSpeed=%d, want MinFan=%d", c.CurrentSpeed, cfg.MinFan)
+		}
+		if c.Samples != 0 {
+			t.Errorf("Samples=%d, want 0", c.Samples)
+		}
+	})
+
+	t.Run("resumes from last_speed (clamped)", func(t *testing.T) {
+		c := newTestController(t, cfg, &stubReader{readings: []sensors.Reading{{CPUMax: 50}}, oks: []bool{true}})
+		// Persist a last_speed ABOVE MaxFan so clampInt's hi branch fires.
+		if err := state.Write(c.StatePath, state.State{BaseSpeed: 40, LastSpeed: cfg.MaxFan + 50, Samples: 7}); err != nil {
+			t.Fatal(err)
+		}
+		c.LoadState()
+		if c.CurrentSpeed != cfg.MaxFan {
+			t.Errorf("CurrentSpeed=%d, want clamped to MaxFan=%d", c.CurrentSpeed, cfg.MaxFan)
+		}
+		if c.Samples != 7 {
+			t.Errorf("Samples=%d, want 7", c.Samples)
+		}
+		if c.BaseSpeed != 40 {
+			t.Errorf("BaseSpeed=%v, want 40", c.BaseSpeed)
+		}
+	})
+
+	t.Run("legacy fallback to base when last_speed=0", func(t *testing.T) {
+		c := newTestController(t, cfg, &stubReader{readings: []sensors.Reading{{CPUMax: 50}}, oks: []bool{true}})
+		if err := state.Write(c.StatePath, state.State{BaseSpeed: 33.6, LastSpeed: 0, Samples: 3}); err != nil {
+			t.Fatal(err)
+		}
+		c.LoadState()
+		// int(33.6+0.5)=34, within [MinFan,MaxFan].
+		if c.CurrentSpeed != 34 {
+			t.Errorf("CurrentSpeed=%d, want 34 (legacy fallback to base)", c.CurrentSpeed)
+		}
+	})
 }
 
 func TestCycle_NormalOperation(t *testing.T) {
@@ -268,5 +315,51 @@ func TestCycle_ExitEmergencyHoldsAboveBaseline(t *testing.T) {
 	}
 	if snap2.InEmergency != 0 {
 		t.Error("snapshot should report emergency cleared")
+	}
+}
+
+// TestCycle_PostEmergency_DTermSettles covers the D-term staleness path
+// (controller L4): during emergency the cycle returns early and never
+// updates LastCPUTemp, so the first post-emergency cycle computes its
+// D-term against the pre-emergency temp. This asserts the controller does
+// not get stuck producing an upward D-spike — once a real post-emergency
+// reading is recorded, a flat temp on the next cycle yields no further
+// upward push (speed settles, does not climb).
+func TestCycle_PostEmergency_DTermSettles(t *testing.T) {
+	cfg := defaultCfg(t)
+	reader := &stubReader{
+		readings: []sensors.Reading{
+			{CPUMax: 68}, // cycle 1: normal, sets LastCPUTemp=68
+			{CPUMax: 85}, // cycle 2: emergency, early-return, LastCPUTemp stays 68
+			{CPUMax: 72}, // cycle 3: exit; D-term = 72-68 (stale, +4)
+			{CPUMax: 72}, // cycle 4: flat; D-term = 72-72 = 0
+		},
+		oks: []bool{true, true, true, true},
+	}
+	c := newTestController(t, cfg, reader)
+	c.CurrentSpeed = cfg.MinFan
+	c.BaseSpeed = 25.0
+
+	_ = c.Cycle(context.Background()) // normal
+	_ = c.Cycle(context.Background()) // emergency
+	if !c.InEmergency {
+		t.Fatal("cycle 2 should be emergency")
+	}
+	snap3 := c.Cycle(context.Background()) // exit (stale +D)
+	if c.InEmergency {
+		t.Fatal("cycle 3 should have cleared emergency")
+	}
+	snap4 := c.Cycle(context.Background()) // flat temp
+
+	// The stale +4°C D-term on the exit cycle must NOT spike the fan toward
+	// MaxFan — a moderate, low setpoint is expected (CPU 72 is below target).
+	if snap3.CurrentSpeed > 60 {
+		t.Errorf("post-emergency exit spiked fan to %d (stale D-term blew up; want a moderate setpoint)", snap3.CurrentSpeed)
+	}
+	// On the flat-temp cycle the D-term is zero; the setpoint must converge,
+	// not diverge upward (allow a small EWMA-recovery delta).
+	if d := snap4.CurrentSpeed - snap3.CurrentSpeed; d > 3 {
+		t.Errorf("post-emergency setpoint did not settle: cycle3=%d cycle4=%d (delta %d > 3)",
+			snap3.CurrentSpeed, snap4.CurrentSpeed, d)
 	}
 }

@@ -40,11 +40,22 @@ var classesInRenderOrder = []envelope.Class{
 func RenderObserverMetrics(o *Observer) []byte {
 	var b bytes.Buffer
 
+	// Compute each class's stats once up front. Stats() takes the observer
+	// lock and recomputes mean/stddev/percentiles (two sorts) on every call,
+	// so calling it once per metric block would lock+recompute 9× per class
+	// per render — and could even render inconsistent values for the same
+	// class across metric lines if a sample landed mid-render. One snapshot
+	// per class avoids both.
+	stats := make(map[envelope.Class]mode.WindowStats, len(classesInRenderOrder))
+	for _, c := range classesInRenderOrder {
+		stats[c] = o.Stats(c)
+	}
+
 	// adaptive_window_samples_filled
 	fmt.Fprintf(&b, "# HELP adaptive_window_samples_filled Sample count currently in the observer's rolling window for this class.\n")
 	fmt.Fprintf(&b, "# TYPE adaptive_window_samples_filled gauge\n")
 	for _, c := range classesInRenderOrder {
-		s := o.Stats(c)
+		s := stats[c]
 		fmt.Fprintf(&b, "adaptive_window_samples_filled{class=%q} %d\n", string(c), s.Samples)
 	}
 	fmt.Fprintf(&b, "\n")
@@ -53,7 +64,7 @@ func RenderObserverMetrics(o *Observer) []byte {
 	fmt.Fprintf(&b, "# HELP adaptive_window_temp_mean Mean class temperature across samples in the rolling window.\n")
 	fmt.Fprintf(&b, "# TYPE adaptive_window_temp_mean gauge\n")
 	for _, c := range classesInRenderOrder {
-		s := o.Stats(c)
+		s := stats[c]
 		fmt.Fprintf(&b, "adaptive_window_temp_mean{class=%q} %.4f\n", string(c), s.TempMean)
 	}
 	fmt.Fprintf(&b, "\n")
@@ -62,7 +73,7 @@ func RenderObserverMetrics(o *Observer) []byte {
 	fmt.Fprintf(&b, "# HELP adaptive_window_temp_stddev Population standard deviation of class temperature across samples.\n")
 	fmt.Fprintf(&b, "# TYPE adaptive_window_temp_stddev gauge\n")
 	for _, c := range classesInRenderOrder {
-		s := o.Stats(c)
+		s := stats[c]
 		fmt.Fprintf(&b, "adaptive_window_temp_stddev{class=%q} %.4f\n", string(c), s.TempStdDev)
 	}
 	fmt.Fprintf(&b, "\n")
@@ -71,7 +82,7 @@ func RenderObserverMetrics(o *Observer) []byte {
 	fmt.Fprintf(&b, "# HELP adaptive_window_temp_p10 10th-percentile (nearest-rank) class temperature across samples.\n")
 	fmt.Fprintf(&b, "# TYPE adaptive_window_temp_p10 gauge\n")
 	for _, c := range classesInRenderOrder {
-		s := o.Stats(c)
+		s := stats[c]
 		fmt.Fprintf(&b, "adaptive_window_temp_p10{class=%q} %.4f\n", string(c), s.TempP10)
 	}
 	fmt.Fprintf(&b, "\n")
@@ -80,7 +91,7 @@ func RenderObserverMetrics(o *Observer) []byte {
 	fmt.Fprintf(&b, "# HELP adaptive_window_temp_p50 50th-percentile (median, nearest-rank) class temperature across samples.\n")
 	fmt.Fprintf(&b, "# TYPE adaptive_window_temp_p50 gauge\n")
 	for _, c := range classesInRenderOrder {
-		s := o.Stats(c)
+		s := stats[c]
 		fmt.Fprintf(&b, "adaptive_window_temp_p50{class=%q} %.4f\n", string(c), s.TempP50)
 	}
 	fmt.Fprintf(&b, "\n")
@@ -89,7 +100,7 @@ func RenderObserverMetrics(o *Observer) []byte {
 	fmt.Fprintf(&b, "# HELP adaptive_window_temp_p90 90th-percentile (nearest-rank) class temperature across samples.\n")
 	fmt.Fprintf(&b, "# TYPE adaptive_window_temp_p90 gauge\n")
 	for _, c := range classesInRenderOrder {
-		s := o.Stats(c)
+		s := stats[c]
 		fmt.Fprintf(&b, "adaptive_window_temp_p90{class=%q} %.4f\n", string(c), s.TempP90)
 	}
 	fmt.Fprintf(&b, "\n")
@@ -98,7 +109,7 @@ func RenderObserverMetrics(o *Observer) []byte {
 	fmt.Fprintf(&b, "# HELP adaptive_window_fan_change_rate Number of fan-demand changes per minute across samples.\n")
 	fmt.Fprintf(&b, "# TYPE adaptive_window_fan_change_rate gauge\n")
 	for _, c := range classesInRenderOrder {
-		s := o.Stats(c)
+		s := stats[c]
 		fmt.Fprintf(&b, "adaptive_window_fan_change_rate{class=%q} %.4f\n", string(c), s.FanChangeRate)
 	}
 	fmt.Fprintf(&b, "\n")
@@ -107,7 +118,7 @@ func RenderObserverMetrics(o *Observer) []byte {
 	fmt.Fprintf(&b, "# HELP adaptive_window_inlet_mean Mean chassis inlet temperature across samples (currently 0 — inlet plumbing deferred).\n")
 	fmt.Fprintf(&b, "# TYPE adaptive_window_inlet_mean gauge\n")
 	for _, c := range classesInRenderOrder {
-		s := o.Stats(c)
+		s := stats[c]
 		fmt.Fprintf(&b, "adaptive_window_inlet_mean{class=%q} %.4f\n", string(c), s.InletMean)
 	}
 	fmt.Fprintf(&b, "\n")
@@ -119,7 +130,7 @@ func RenderObserverMetrics(o *Observer) []byte {
 	fmt.Fprintf(&b, "# HELP adaptive_window_fan_demand_p90 90th-percentile fan demand (percent) across samples in the rolling window.\n")
 	fmt.Fprintf(&b, "# TYPE adaptive_window_fan_demand_p90 gauge\n")
 	for _, c := range classesInRenderOrder {
-		s := o.Stats(c)
+		s := stats[c]
 		fmt.Fprintf(&b, "adaptive_window_fan_demand_p90{class=%q} %.4f\n", string(c), s.FanDemandP90)
 	}
 	return b.Bytes()
@@ -222,7 +233,11 @@ func RenderReconcilerMetrics(r *Reconciler, obs *Observer) []byte {
 	fmt.Fprintf(&b, "# TYPE adaptive_target_drifts_total counter\n")
 	for _, c := range classesInRenderOrder {
 		if dirs, ok := metrics.Drifts[c]; ok {
-			for _, dir := range []string{"up", "down"} {
+			// Stable, complete order. "bounded_high"/"bounded_low" count
+			// cycles where the score wanted to drift but the target was
+			// pinned at a clamp — a key envelope-misconfiguration signal,
+			// so they must render alongside actual "up"/"down" drifts.
+			for _, dir := range []string{"up", "down", "bounded_high", "bounded_low"} {
 				if count, ok := dirs[dir]; ok && count > 0 {
 					fmt.Fprintf(&b, "adaptive_target_drifts_total{class=%q,direction=%q} %d\n", string(c), dir, count)
 				}

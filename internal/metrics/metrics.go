@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Snapshot is the per-cycle inputs the metrics file reflects.
@@ -23,7 +24,8 @@ type Snapshot struct {
 	InEmergency  int // 0 or 1
 
 	// Wall-clock seconds the most recent cycle took (work only, NOT including the sleep INTERVAL).
-	CycleDurationSeconds int
+	// Float so sub-second cycles are visible (an integer rounds an 800ms cycle to 0).
+	CycleDurationSeconds float64
 
 	// Per-class temps (0 if absent).
 	CPUMax        int
@@ -88,13 +90,13 @@ func Render(s Snapshot) []byte {
 	// Match bash %.4f formatting for base_speed in the metric body.
 	fmt.Fprintf(&b, "fan_controller_base_speed_percent %.4f\n", s.BaseSpeed)
 	fmt.Fprintf(&b, "\n")
-	fmt.Fprintf(&b, "# HELP fan_controller_samples_total Number of decision cycles since controller start.\n")
+	fmt.Fprintf(&b, "# HELP fan_controller_samples_total Number of successful (non-emergency, temps-readable) PID cycles since first run (persisted across restarts; resets to 0 only if state is lost). Does not advance during sustained emergencies or sensor-read failures.\n")
 	fmt.Fprintf(&b, "# TYPE fan_controller_samples_total counter\n")
 	fmt.Fprintf(&b, "fan_controller_samples_total %d\n", s.Samples)
 
 	fmt.Fprintf(&b, "\n# HELP fan_controller_cycle_duration_seconds Wall-clock seconds for the most recent main-loop cycle (get_temps + PIDs + proximity_floor + max() + set_fan, NOT including sleep INTERVAL).\n")
 	fmt.Fprintf(&b, "# TYPE fan_controller_cycle_duration_seconds gauge\n")
-	fmt.Fprintf(&b, "fan_controller_cycle_duration_seconds %d\n", s.CycleDurationSeconds)
+	fmt.Fprintf(&b, "fan_controller_cycle_duration_seconds %.3f\n", s.CycleDurationSeconds)
 	fmt.Fprintf(&b, "\n")
 	fmt.Fprintf(&b, "# HELP fan_controller_emergency_active Whether the controller is in emergency state (1=yes, 0=no).\n")
 	fmt.Fprintf(&b, "# TYPE fan_controller_emergency_active gauge\n")
@@ -152,8 +154,22 @@ func Render(s Snapshot) []byte {
 	fmt.Fprintf(&b, "\n")
 	fmt.Fprintf(&b, "# HELP fan_controller_binding_source_info Which source bound the fan decision this cycle (max-wins). 1 for the active source.\n")
 	fmt.Fprintf(&b, "# TYPE fan_controller_binding_source_info gauge\n")
-	fmt.Fprintf(&b, "fan_controller_binding_source_info{source=\"%s\"} 1\n", src)
+	fmt.Fprintf(&b, "fan_controller_binding_source_info{source=\"%s\"} 1\n", escapeLabelValue(src))
 	return b.Bytes()
+}
+
+// escapeLabelValue escapes a string for use inside a Prometheus
+// text-format label value. Per the exposition format, backslash, double
+// quote, and newline must be escaped — an unescaped quote or backslash
+// makes node-exporter's textfile collector reject the ENTIRE file,
+// silently dropping every metric in it. Current Source values are all
+// safe literals; this guards against any future source string.
+func escapeLabelValue(s string) string {
+	if !strings.ContainsAny(s, "\\\"\n") {
+		return s
+	}
+	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
+	return r.Replace(s)
 }
 
 // WriteAtomic writes the rendered snapshot to path. Uses temp-file-
@@ -170,5 +186,8 @@ func WriteAtomic(path string, snap Snapshot) error {
 	if err := os.WriteFile(tmp, Render(snap), 0o644); err != nil {
 		return err
 	}
+	// Clean up the temp file if the rename fails (e.g. cross-device); on
+	// success the rename consumes it and this Remove is a no-op.
+	defer os.Remove(tmp)
 	return os.Rename(tmp, path)
 }

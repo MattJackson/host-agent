@@ -457,7 +457,7 @@ func TestScore_SaturationDrivesTargetUp_AllModes(t *testing.T) {
 		TempMean: 79, TempStdDev: 0.7, FanChangeRate: 0, FanDemandMean: 93, FanDemandP90: 95,
 	}
 
-	for _, m := range []Mode{Balanced, MinNoise, Eco} {
+	for _, m := range []Mode{MaxCool, Balanced, MinNoise, Eco} {
 		t.Run(string(m), func(t *testing.T) {
 			scorer := m.Score()
 			now := scorer(env, statsNow)

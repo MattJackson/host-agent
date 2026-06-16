@@ -56,7 +56,7 @@ type Controller struct {
 	// Diagnostic: wall-clock seconds the last Cycle() call took.
 	// Exposed via metrics.Snapshot.CycleDurationSeconds so we can SEE
 	// in Grafana how long each cycle takes instead of guessing.
-	lastCycleDuration int
+	lastCycleDuration float64
 
 	// D-term per class.
 	LastCPUTemp int
@@ -162,7 +162,7 @@ func (c *Controller) PersistState() error {
 func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 	cycleStart := time.Now()
 	defer func() {
-		c.lastCycleDuration = int(time.Since(cycleStart).Round(time.Second).Seconds())
+		c.lastCycleDuration = time.Since(cycleStart).Seconds()
 	}()
 	// Re-assert manual fan control every cycle. iDRAC's third-party PCIe
 	// cooling response will silently flip the BMC back to auto (→ 100%
@@ -311,7 +311,13 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 	c.Samples++
 
 	// D-term state update — only update classes that returned a real reading.
-	c.LastCPUTemp = reading.CPUMax
+	// CPU is guarded for symmetry with the optional classes: a CPUMax of 0
+	// reaching here (a refactor that returns ok=true with a zero max) would
+	// otherwise zero the stored temp and spike the D-term next cycle. Today
+	// cpu.Read() returns ok=false on a zero max, so this is defensive.
+	if reading.CPUMax > 0 {
+		c.LastCPUTemp = reading.CPUMax
+	}
 	if reading.PassiveGPUMax > 0 {
 		c.LastPGTemp = reading.PassiveGPUMax
 	}

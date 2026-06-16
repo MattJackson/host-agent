@@ -6,13 +6,13 @@ fan_controller_fan_setpoint_percent 36
 # TYPE fan_controller_base_speed_percent gauge
 fan_controller_base_speed_percent 20.0240
 
-# HELP fan_controller_samples_total Number of decision cycles since controller start.
+# HELP fan_controller_samples_total Number of successful (non-emergency, temps-readable) PID cycles since first run (persisted across restarts; resets to 0 only if state is lost). Does not advance during sustained emergencies or sensor-read failures.
 # TYPE fan_controller_samples_total counter
 fan_controller_samples_total 3
 
 # HELP fan_controller_cycle_duration_seconds Wall-clock seconds for the most recent main-loop cycle (get_temps + PIDs + proximity_floor + max() + set_fan, NOT including sleep INTERVAL).
 # TYPE fan_controller_cycle_duration_seconds gauge
-fan_controller_cycle_duration_seconds 0
+fan_controller_cycle_duration_seconds <scrubbed>
 
 # HELP fan_controller_emergency_active Whether the controller is in emergency state (1=yes, 0=no).
 # TYPE fan_controller_emergency_active gauge

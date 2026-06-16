@@ -11,6 +11,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -188,7 +189,7 @@ func (o *Observer) computeStats(class envelope.Class) mode.WindowStats {
 	for i, s := range buf {
 		sortedTemps[i] = s.TempCelsius
 	}
-	sortFloats(sortedTemps)
+	sort.Float64s(sortedTemps)
 
 	tempP10 := sortedTemps[percentileIndex(10, n)]
 	tempP50 := sortedTemps[percentileIndex(50, n)]
@@ -209,7 +210,7 @@ func (o *Observer) computeStats(class envelope.Class) mode.WindowStats {
 	for i, s := range buf {
 		sortedFan[i] = float64(s.FanDemandPct)
 	}
-	sortFloats(sortedFan)
+	sort.Float64s(sortedFan)
 	fanP90 := sortedFan[percentileIndex(90, n)]
 
 	// Fan change rate: count adjacent changes >=1, divide by duration in minutes
@@ -226,10 +227,8 @@ func (o *Observer) computeStats(class envelope.Class) mode.WindowStats {
 
 	duration := buf[n-1].Timestamp.Sub(buf[0].Timestamp)
 	var fanChangeRate float64
-	if duration.Seconds() > 0 {
+	if duration > 0 {
 		fanChangeRate = float64(changes) / duration.Minutes()
-	} else {
-		fanChangeRate = 0
 	}
 
 	// Inlet mean/stddev
@@ -272,19 +271,6 @@ func percentileIndex(p int, n int) int {
 		idx = n - 1
 	}
 	return idx
-}
-
-// sortFloats sorts a slice of floats in ascending order (insertion sort).
-func sortFloats(a []float64) {
-	for i := 1; i < len(a); i++ {
-		key := a[i]
-		j := i - 1
-		for j >= 0 && a[j] > key {
-			a[j+1] = a[j]
-			j--
-		}
-		a[j+1] = key
-	}
 }
 
 // Reset clears the buffer for a single class. Used by the reconciler
@@ -353,6 +339,11 @@ func (o *Observer) SaveTo(path string) error {
 // changed OBSERVER_WINDOW_MINUTES between runs, the persisted samples
 // would no longer fit the new ring buffer cleanly. Better to start
 // cold than serve confusing partial data.
+//
+// Concurrency: must be called at startup BEFORE any goroutine calls
+// Add/Stats. It reads o.windowSize without the lock (safe only under
+// that single-threaded-startup constraint) and then takes o.mu to swap
+// in the restored buffers.
 func (o *Observer) LoadFrom(path string) (loaded bool, err error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {

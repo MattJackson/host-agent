@@ -77,10 +77,16 @@ func (c *Client) HandbackAuto(ctx context.Context) error {
 
 // SetFan commands all chassis fans to pct percent (0-100). pct is
 // formatted as `0xNN` hex to match the bash original's
-// `printf "0x%02x" "$pct"`. Values outside 0-100 are passed through —
-// the BMC will clamp or reject them. The controller's clamp() is
-// responsible for keeping pct in range.
+// `printf "0x%02x" "$pct"`. Values above 100 are passed through — the
+// BMC clamps or rejects them, and the byte is still valid (0xff). A
+// NEGATIVE pct is floored to 0 first: `fmt.Sprintf("0x%02x", -5)` yields
+// the invalid byte "0x-5", which the BMC would reject — failing OPEN
+// (fans drop) rather than safe. The controller's clamp() normally keeps
+// pct in range; this is defense in depth.
 func (c *Client) SetFan(ctx context.Context, pct int) error {
+	if pct < 0 {
+		pct = 0
+	}
 	hex := fmt.Sprintf("0x%02x", pct)
 	_, err := c.Runner.Run(ctx, "ipmitool", "raw", "0x30", "0x30", "0x02", "0xff", hex)
 	return err

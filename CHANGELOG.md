@@ -6,6 +6,38 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.3.10] — 2026-06-15
+
+Hardening release from a full multi-pass code audit (fix → re-audit → repeat until clean) plus a large test-coverage expansion. No change to the v0.3.9 fan-control behavior; one real latent bug fixed (config validation), several observability/correctness gaps closed, and the audit caught three regressions introduced mid-pass (all fixed before release).
+
+### Fixed
+
+- **Config validation (the one genuinely-impactful latent bug).** `bindInt`/`bindFloat` silently swallowed parse errors, so a malformed numeric (`FAN_GAIN=`, `MIN_FAN=abc`) degraded to `0` — disabling proportional gain or allowing 0% fans — with no operator signal. Parse failures now log a WARN, and a new exported `config.Validate(cfg)` asserts safety invariants (`0 < MIN_FAN ≤ MAX_FAN ≤ 100`, `INTERVAL > 0`, `FAN_GAIN > 0`, `0 < ADAPT_ALPHA < 1`, per-class `target < emergency`). `main.go` calls it after `ApplyMode` and exits — failing closed to iDRAC automatic — on violation. `Validate` is intentionally separate from `Load` so partially-resolved/mode-only configs can still be inspected.
+- **`adaptive_target_drifts_total` dropped `bounded_high`/`bounded_low`.** The reconciler accumulated these direction counters but `RenderReconcilerMetrics` iterated a hardcoded `["up","down"]` slice, so sustained bound-pressure (a key envelope-misconfiguration signal) never reached Prometheus. The renderer now emits all four directions; a test asserts the rendered output, not just the in-memory map.
+- **smartctl SATA temperature: a bad attribute 190 suppressed a valid 194.** After v0.3.9 began accepting attr 190 (`Airflow_Temperature_Cel`) alongside 194, an unparseable/zero 190 row hit a `break` and abandoned the scan before reaching a valid 194 row (drive temp would abstain). Changed to `continue`.
+- **smartctl standby detection matched substrings.** `standbyRE` (`STANDBY|SLEEP`) would classify an error message containing "asleep"/"sleeping" as standby. Now uses word boundaries (`\bSTANDBY\b|\bSLEEP\b`) so a missing/failed drive isn't mistagged as merely sleeping.
+
+### Changed
+
+- **`fan_controller_cycle_duration_seconds` is now a float (`%.3f`).** Previously an integer that rounded any sub-second cycle to `0`. The e2e golden test now scrubs this inherently-non-deterministic (real wall-clock) line, removing latent flakiness the integer form was masking.
+- **`fan_controller_samples_total` HELP text** clarified: it counts successful non-emergency PID cycles (does not advance during sustained emergencies or sensor-read failures). Type remains `counter` (verified persisted + monotonic).
+- Prometheus label values are now escaped (`escapeLabelValue`: `\`, `"`, newline) on the dynamic `source` label.
+- `RenderObserverMetrics` computes each class's window stats once per render (was 9× per class — 36 lock+recompute cycles → 4); insertion sort replaced with `sort.Float64s`.
+- Shutdown path now logs previously-discarded `PersistState`/`HandbackAuto` errors; adaptive-loop ticker is stopped on exit; duplicate active-profile log line removed.
+
+### Internal / safety
+
+- Removed an unreachable `DriftReasonVarianceReset` case that was a future double-count hazard; guarded the `LastCPUTemp` D-term update for symmetry with the optional classes; documented the `r.mu → o.mu` lock order and the emergency-first ordering that makes a deadband top crossing `Emergency` inert.
+- **Corrected a too-strict validation invariant before it shipped.** An interim `target+deadband ≥ emergency` check would have rejected `HOST_AGENT_MODE=eco` at startup (CPU 75+5 vs `CPU_EMERGENCY=80`; SSD 60+5 vs 65). The safe invariant is `target < emergency` — the deadband top crossing emergency is inert because the controller evaluates the emergency threshold before the PID/deadband every cycle. A regression test now asserts all four modes boot on the default profile.
+
+### Tests
+
+Large coverage expansion: envelope 17%→100%, controller 73%→94%, adaptive→95%, plus config validation, metrics label-escaping, and sensors parse-path tests. New regression tests pin each fix above (notably: transient-dip non-drift-down already in v0.3.9, bounded-counter render, attr-190→194 fallthrough, `standbyRE` word boundaries, eco-mode validation, post-emergency D-term settling, observer persistence error paths, `percentileIndex` clamps).
+
+### Migration
+
+Drop-in image upgrade; Watchtower picks it up on the next 5-min poll. One behavior change to be aware of: a host with a genuinely-unsafe config (e.g. `MIN_FAN=0`, `target ≥ emergency`, malformed numerics) will now refuse to start and fall back to iDRAC automatic fan control rather than running with bad settings. All shipped profiles and all four modes pass validation on the default profile.
+
 ## [0.3.9] — 2026-06-15
 
 ### Fixed — transient fan dip drove a downward-drift limit cycle (fans pinned ~97–100% for no thermal reason)
