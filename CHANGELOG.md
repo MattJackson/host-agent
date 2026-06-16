@@ -6,6 +6,28 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.3.13] — 2026-06-16
+
+### Fixed — ~10-min fan-hunt window after every restart (seed live targets from persisted state)
+
+**Symptom**: immediately after a restart/redeploy, the fan would hunt for ~one adaptive cycle (~10 min) even on a host the reconciler had already tuned, then settle. Observed live after the v0.3.12 deploy: the P4 sat at 88°C with the fan sawtoothing 69↔86 for ~5 min, then snapped flat at 74% the moment the first reconcile ran.
+
+**Root cause**: `liveTargets` (the reconciler→PID hand-off) starts empty and is only populated when the reconciler's `Step()` runs — the first time being ADAPTIVE_CYCLE_MINUTES after startup. Until then `liveTargets.ApplyTo(cfg)` is a no-op, so the PID runs on the **mode-initial** target/deadband from `ApplyMode` (e.g. PassiveGPU 83/4) instead of the **persisted, learned** values the reconciler loaded from disk (e.g. 85/7). The narrower initial deadband puts the card's load equilibrium on the band edge → the symmetric-deadband loop hunts until the learned wider band is applied.
+
+**Fix**: at startup, seed `liveTargets` directly from the reconciler's persisted per-class state (`seedLiveTargets` in `cmd/fan-controller`), so the PID uses the learned target/deadband from its very first cycle. Operator-overridden classes are skipped, mirroring the reconcile loop's `Skipped` path so a pin isn't clobbered. No-op when adaptive is disabled.
+
+This closes the last "needs babysitting" gap: the controller now resumes its learned equilibrium instantly across restarts/redeploys instead of relearning for 10 minutes each time.
+
+### Tests
+
+- `cmd/fan-controller/seed_test.go::TestSeedLiveTargets_AppliesLearnedValuesAtStartup` — persisted 85/7 reaches the PID config via seed+ApplyTo (not the mode-initial 83/4).
+- `TestSeedLiveTargets_SkipsOverriddenClass` — an operator-pinned class is not seeded (override preserved).
+- `TestSeedLiveTargets_NilReconciler` — adaptive-disabled path is a safe no-op.
+
+### Migration
+
+Drop-in upgrade. After this, a redeploy no longer triggers a ~10-min hunt; the fan picks up the learned, settled curve immediately.
+
 ## [0.3.12] — 2026-06-16
 
 ### Fixed — fan hunting at steady temperature (symmetric PID deadband)

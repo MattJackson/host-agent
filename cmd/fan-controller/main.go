@@ -188,6 +188,13 @@ func main() {
 	if adaptiveDisabled {
 		logger.Printf("adaptive reconciler: disabled by HOST_AGENT_ADAPTIVE_DISABLED")
 	} else {
+		// Seed liveTargets from the reconciler's PERSISTED state so the PID
+		// uses the learned target/deadband from cycle 1. Without this there's
+		// an ADAPTIVE_CYCLE_MINUTES (~10 min) window after every restart where
+		// ApplyTo is a no-op and the PID runs on mode-initial values — which
+		// can re-introduce a fan-hunt at the narrower initial deadband even
+		// though the reconciler already learned a wider, settled one.
+		seedLiveTargets(recon, liveTargets, perClassOverrides)
 		go runAdaptiveLoop(ctx, logger, recon, liveTargets, time.NewTicker(time.Duration(adaptiveCycleMin)*time.Minute))
 	}
 
@@ -439,6 +446,25 @@ func (osFS) ReadFile(name string) ([]byte, error) {
 
 func (osFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	return os.ReadDir(filepath.Clean("/" + name))
+}
+
+// seedLiveTargets pushes the reconciler's persisted per-class target +
+// deadband into the live store at startup, so the PID picks up the learned
+// values on its first cycle instead of running ADAPTIVE_CYCLE_MINUTES on
+// mode-initial values after a restart. Operator-overridden classes are
+// skipped (mirrors runAdaptiveLoop's Skipped path) so a pin isn't clobbered.
+func seedLiveTargets(r *adaptive.Reconciler, lt *livetargets.Store, overrides map[envelope.Class]bool) {
+	if r == nil {
+		return
+	}
+	for class := range r.State().Classes {
+		if overrides[class] {
+			continue
+		}
+		if t, d, ok := r.Target(class); ok {
+			lt.Set(class, t, d)
+		}
+	}
 }
 
 // runAdaptiveLoop drives the slow intent-layer reconcile pass. Fires
