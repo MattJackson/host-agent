@@ -63,10 +63,10 @@ func TestStepPID_DeadbandDriftsTowardMinFan(t *testing.T) {
 	}
 }
 
-func TestStepPID_AsymmetricDeadband_AboveTargetAlwaysSteps(t *testing.T) {
-	// Critical: above target, inside |error| <= deadband, PID still
-	// steps (NOT drifts). Bash semantics: `if error <= 0 && abs <= db`
-	// — positive errors always do P+D.
+func TestStepPID_SymmetricDeadband_CoastsAboveTargetInBand(t *testing.T) {
+	// v0.3.12: above target but inside |error| <= deadband, the PID must
+	// now COAST toward MinFan (not ramp). This is what stops the saw-tooth
+	// hunt; the caller's smooth proximity floor then governs the band.
 	p := PIDParams{
 		Temp:              71, // +1 above target, inside deadband
 		Target:            70,
@@ -79,9 +79,46 @@ func TestStepPID_AsymmetricDeadband_AboveTargetAlwaysSteps(t *testing.T) {
 		DerivativeGain:    1.0,
 		DeadbandDriftRate: 3,
 	}
-	// step = 1*0.5 + 0*1.0 = 0.5 → round half-away = 1. cand = 51.
-	if got := StepPID(p); got != 51 {
-		t.Errorf("+1 above target, inside deadband: got %d want 51", got)
+	// Inside deadband (|+1| <= 3) → coast down by rate: 50 - 3 = 47.
+	if got := StepPID(p); got != 47 {
+		t.Errorf("+1 above target, inside deadband: got %d want 47 (coast down)", got)
+	}
+
+	// Just OUTSIDE the deadband on the high side → P+D ramp re-engages.
+	p.Temp = 74 // +4, outside deadband 3
+	p.LastTemp = 74
+	// step = 4*0.5 + 0 = 2 → cand = 52.
+	if got := StepPID(p); got != 52 {
+		t.Errorf("+4 above target (outside deadband): got %d want 52 (ramp)", got)
+	}
+}
+
+// TestStepPID_NoHuntAroundTarget is the v0.3.12 anti-hunt regression: with
+// temp oscillating ±1°C around the target INSIDE the deadband (the docker-1
+// P4 load pattern), the PID candidate must monotonically coast down — never
+// ramp up on the +1°C samples — so the smooth proximity floor can govern
+// instead of the old saw-tooth.
+func TestStepPID_NoHuntAroundTarget(t *testing.T) {
+	cur := 90                                      // start high (as if previously ramped)
+	temps := []int{85, 84, 85, 84, 85, 86, 84, 85} // jittering around target 84, all within deadband 7
+	last := 85
+	for _, temp := range temps {
+		p := PIDParams{
+			Temp: temp, Target: 84, Deadband: 7, LastTemp: last,
+			CurrentSpeed: cur, MinFan: 10, MaxFan: 100,
+			FanGain: 0.5, DerivativeGain: 1.0, DeadbandDriftRate: 3,
+		}
+		next := StepPID(p)
+		if next > cur {
+			t.Errorf("hunt detected: temp=%d (in-band) raised candidate %d→%d; must coast down", temp, cur, next)
+		}
+		cur = next
+		last = temp
+	}
+	// After 8 cycles of coasting from 90 at rate 3, it should have fallen
+	// well toward MinFan (proximity floor will catch the real level).
+	if cur > 90-3*4 {
+		t.Errorf("candidate did not coast down as expected: ended at %d", cur)
 	}
 }
 

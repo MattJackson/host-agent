@@ -6,6 +6,30 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.3.12] — 2026-06-16
+
+### Fixed — fan hunting at steady temperature (symmetric PID deadband)
+
+**Symptom**: under steady GPU load the chassis fan sawtoothed ~85↔95% while the card temperature held essentially flat (e.g. P4 steady at 84–85°C). The fan was visibly "all over the place" at a constant temperature — churn, not cooling.
+
+**Root cause**: the per-class PID deadband in `control.StepPID` was **asymmetric** — it coasted the fan toward MinFan only when temp was *at or below* target, but the instant temp was even 1°C *above* target it jumped to the `error*FanGain + Δtemp*DerivativeGain` ramp branch. Because a loaded card's equilibrium sits right around its target, temp jittered across the target each cycle: +1°C → ramp up, back to target → coast down by `DeadbandDriftRate`, repeat. That's a limit cycle. The adaptive reconciler had already widened the deadband to its max trying to damp the variance, but the asymmetric logic ignored the deadband on the high side, so the learned damping couldn't bite. The derivative term amplified each temp wiggle.
+
+**Fix**: make the deadband **symmetric** — coast within `|temp-target| <= deadband` on *both* sides (one-line condition change in `control.StepPID`). Inside the band the PID candidate now falls back toward MinFan, which lets the caller's **proximity floor** govern: `ProximityFloor` is a smooth linear ramp (MinFan at `emergency-window` → MaxFan at `emergency`) that the controller already `max()`'s into every setpoint. So in the operating band the fan now follows that smooth, monotonic, single-equilibrium curve instead of the PID's bang-bang hunt. The high side stays safe — the proximity floor ramps hard as temp approaches emergency and the emergency trip forces MaxFan above it; the PID's P+D ramp only re-engages once temp exceeds `target+deadband`.
+
+This is a self-tuning improvement, not a hand-tuned knob: the adaptive layer keeps learning `target`/`deadband` (widening the band absorbs bursty load automatically), and the fast loop now honors that band in both directions. No gains were changed; no per-host tuning added.
+
+**Effect**: in the operating band the fan tracks the smooth proximity-floor curve (for the P4: ~MinFan at 83°C rising to ~74% at 88°C, 100% at 90°C) rather than sawtoothing. Idle/emergency behavior unchanged.
+
+### Tests
+
+- `internal/control/control_test.go::TestStepPID_SymmetricDeadband_CoastsAboveTargetInBand` — above-target-but-in-band now coasts down (was: ramped); just outside the band the P+D ramp still re-engages.
+- `internal/control/control_test.go::TestStepPID_NoHuntAroundTarget` — feeds the docker-1 P4 jitter pattern (temp oscillating ±1–2°C around target, all in-band) and asserts the candidate monotonically coasts down — never ramps up on an in-band sample. Would fail under the old asymmetric logic.
+- Existing saturation-escape / emergency / idle / clamp tests unchanged and passing; e2e golden regenerated.
+
+### Migration
+
+Drop-in image upgrade; Watchtower pulls on the next 5-min poll. Hosts will see the fan settle onto the smooth proximity-floor curve in the operating band instead of hunting; cards may sit a couple °C warmer in exchange (still governed by the same emergency backstop). No config changes.
+
 ## [0.3.11] — 2026-06-16
 
 ### Changed — raise the `passive_gpu` thermal envelope (quieter chassis fans for hot-tolerant datacenter cards)

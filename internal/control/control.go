@@ -46,9 +46,11 @@ type PIDParams struct {
 //
 // Behavior (matches bash exactly):
 //   - Temp <= 0: return 0 (abstain — don't bind max() at any speed).
-//   - At-or-below-target and inside deadband: drift toward MinFan by
-//     DeadbandDriftRate, clamped to MinFan. NOT toward base — see bash
-//     comment for the stuck-at-base trap that caused.
+//   - Inside the deadband (|temp-target| <= deadband, EITHER side): coast
+//     toward MinFan by DeadbandDriftRate, clamped to MinFan. The caller
+//     max()'s in the smooth proximity floor, which then governs the band
+//     (see the symmetric-deadband note in the body). NOT toward base — see
+//     bash comment for the stuck-at-base trap that caused.
 //   - Otherwise: step = error * FanGain + d_temp * DerivativeGain,
 //     rounded half-away-from-zero, then candidate = clamp(
 //     CurrentSpeed + step, MinFan, MaxFan).
@@ -63,8 +65,29 @@ func StepPID(p PIDParams) int {
 		dTemp = p.Temp - p.LastTemp
 	}
 
-	// Asymmetric deadband: at-or-below-target AND |error| <= deadband.
-	if error <= 0 && abs(error) <= p.Deadband {
+	// Symmetric deadband: anywhere within ±deadband of target, coast the
+	// PID candidate DOWN toward MinFan rather than ramping. (v0.3.12 — was
+	// asymmetric: it coasted only at-or-below target and ramped the instant
+	// temp was 1°C above, which—because the card's load equilibrium sits
+	// right at target—made the fan saw-tooth: ramp up at target+1, drift
+	// down at target, repeat. That hunt is what made fans "all over the
+	// place" at a steady temperature.)
+	//
+	// Coasting down inside the whole band lets the candidate fall back to
+	// the proximity floor, which the caller max()'s in. The proximity floor
+	// is a SMOOTH, temperature-proportional curve (MinFan at emergency-window
+	// up to MaxFan at emergency) — so within the band the floor becomes the
+	// de-facto governor: a smooth, monotonic fan-vs-temp response with a
+	// single stable equilibrium, instead of the PID's bang-bang hunt. The
+	// high side stays safe because the floor ramps hard as temp approaches
+	// emergency and the emergency trip forces MaxFan above it; the PID only
+	// re-engages (below) once temp exceeds target+deadband, which for tight
+	// envelopes is at/above the emergency trip anyway.
+	//
+	// The adaptive reconciler widens this deadband when it observes variance,
+	// so the "settle zone" grows to absorb bursty load automatically — the
+	// learned-damping behavior, now actually honored on both sides.
+	if abs(error) <= p.Deadband {
 		cand := p.CurrentSpeed - p.DeadbandDriftRate
 		if cand < p.MinFan {
 			cand = p.MinFan
