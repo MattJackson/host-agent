@@ -55,7 +55,7 @@ func TestInitialTarget(t *testing.T) {
 			mode: MaxCool,
 			expected: map[envelope.Class][2]int{
 				envelope.CPU:        {55, 2},
-				envelope.PassiveGPU: {65, 2},
+				envelope.PassiveGPU: {75, 2},
 				envelope.HDD:        {32, 2},
 				envelope.SSD:        {45, 2},
 			},
@@ -65,7 +65,7 @@ func TestInitialTarget(t *testing.T) {
 			mode: Balanced,
 			expected: map[envelope.Class][2]int{
 				envelope.CPU:        {65, 3},
-				envelope.PassiveGPU: {72, 3},
+				envelope.PassiveGPU: {80, 3},
 				envelope.HDD:        {38, 3},
 				envelope.SSD:        {50, 3},
 			},
@@ -75,7 +75,7 @@ func TestInitialTarget(t *testing.T) {
 			mode: MinNoise,
 			expected: map[envelope.Class][2]int{
 				envelope.CPU:        {75, 4},
-				envelope.PassiveGPU: {80, 4},
+				envelope.PassiveGPU: {83, 4},
 				envelope.HDD:        {43, 4},
 				envelope.SSD:        {60, 4},
 			},
@@ -85,7 +85,7 @@ func TestInitialTarget(t *testing.T) {
 			mode: Eco,
 			expected: map[envelope.Class][2]int{
 				envelope.CPU:        {75, 5},
-				envelope.PassiveGPU: {80, 5},
+				envelope.PassiveGPU: {83, 5},
 				envelope.HDD:        {43, 5},
 				envelope.SSD:        {60, 5},
 			},
@@ -169,17 +169,17 @@ func floatNear(a, b, eps float64) bool {
 }
 
 func TestScore_MaxCool_Formula(t *testing.T) {
-	// PassiveGPU: PreferredLow=65, PreferredHigh=80.
+	// PassiveGPU: PreferredLow=75, PreferredHigh=83.
 	// score = max(0, mean - PreferredLow) + 0.5*variance.
 	tests := []struct {
 		stats WindowStats
 		want  float64
 	}{
-		{WindowStats{TempMean: 70, TempStdDev: 0}, 5.0},  // 5 above PreferredLow
-		{WindowStats{TempMean: 70, TempStdDev: 2}, 7.0},  // 5 + 0.5*4
+		{WindowStats{TempMean: 80, TempStdDev: 0}, 5.0},  // 5 above PreferredLow
+		{WindowStats{TempMean: 80, TempStdDev: 2}, 7.0},  // 5 + 0.5*4
 		{WindowStats{TempMean: 60, TempStdDev: 3}, 4.5},  // below PreferredLow → 0 + 0.5*9
-		{WindowStats{TempMean: 65, TempStdDev: 0}, 0.0},  // at PreferredLow → ideal
-		{WindowStats{TempMean: 90, TempStdDev: 0}, 25.0}, // 25 above PreferredLow, well past PreferredHigh
+		{WindowStats{TempMean: 75, TempStdDev: 0}, 0.0},  // at PreferredLow → ideal
+		{WindowStats{TempMean: 90, TempStdDev: 0}, 15.0}, // 15 above PreferredLow
 	}
 
 	env := envelope.DefaultEnvelopes[envelope.PassiveGPU]
@@ -225,16 +225,16 @@ func TestScore_Balanced_Formula(t *testing.T) {
 }
 
 func TestScore_MinNoise_Formula(t *testing.T) {
-	// PassiveGPU: PreferredLow=65, PreferredHigh=80.
+	// PassiveGPU: PreferredLow=75, PreferredHigh=83.
 	// score = belowHigh + 5*aboveHigh + 2*fanRate + 0.5*variance.
 	tests := []struct {
 		stats WindowStats
 		want  float64
 	}{
-		{WindowStats{TempMean: 80, TempStdDev: 0, FanChangeRate: 0}, 0.0},  // at PreferredHigh → ideal
-		{WindowStats{TempMean: 85, TempStdDev: 0, FanChangeRate: 0}, 25.0}, // 5 above PreferredHigh → 5*5
-		{WindowStats{TempMean: 70, TempStdDev: 0, FanChangeRate: 0}, 10.0}, // 10 below PreferredHigh
-		{WindowStats{TempMean: 70, TempStdDev: 2, FanChangeRate: 3}, 18.0}, // 10 + 2*3 + 0.5*4
+		{WindowStats{TempMean: 83, TempStdDev: 0, FanChangeRate: 0}, 0.0},  // at PreferredHigh → ideal
+		{WindowStats{TempMean: 88, TempStdDev: 0, FanChangeRate: 0}, 25.0}, // 5 above PreferredHigh → 5*5
+		{WindowStats{TempMean: 73, TempStdDev: 0, FanChangeRate: 0}, 10.0}, // 10 below PreferredHigh
+		{WindowStats{TempMean: 73, TempStdDev: 2, FanChangeRate: 3}, 18.0}, // 10 + 2*3 + 0.5*4
 	}
 
 	env := envelope.DefaultEnvelopes[envelope.PassiveGPU]
@@ -404,13 +404,13 @@ func TestScore_SaturationPenalty_KeysOffP90NotMean(t *testing.T) {
 // target DOWN must still score better than holding. The p90 fix must not
 // over-suppress legitimate downward drift — only the saturated case.
 func TestScore_MinNoise_DownDriftAllowedWithHeadroom(t *testing.T) {
-	env := envelope.DefaultEnvelopes[envelope.PassiveGPU] // PreferredHigh=80
+	env := envelope.DefaultEnvelopes[envelope.PassiveGPU] // PreferredHigh=83
 	scorer := MinNoise.Score()
 
 	// Temp above PreferredHigh, fan cruising (p90=60 → zero penalty).
-	now := WindowStats{TempMean: 82, TempStdDev: 1, FanChangeRate: 0.5, FanDemandP90: 60}
+	now := WindowStats{TempMean: 85, TempStdDev: 1, FanChangeRate: 0.5, FanDemandP90: 60}
 	// Synth "down 1°C": temp falls, fan rises a little — still unsaturated.
-	down := WindowStats{TempMean: 81, TempStdDev: 1.3, FanChangeRate: 1.0, FanDemandP90: 65}
+	down := WindowStats{TempMean: 84, TempStdDev: 1.3, FanChangeRate: 1.0, FanDemandP90: 65}
 
 	if !(scorer(env, down) < scorer(env, now)) {
 		t.Errorf("with fan headroom and temp above PreferredHigh, down-drift should score lower; now=%v down=%v",

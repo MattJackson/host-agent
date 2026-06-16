@@ -292,8 +292,8 @@ func TestReconciler_Step_DriftUp_Toward_MaxSafe_MinNoise(t *testing.T) {
 // fighting the gap between target and observed equilibrium.
 //
 // Scenario: a PassiveGPU class under sustained inference load with
-// equilibrium temperature parked ~4°C above the balanced PreferredMid
-// target, but well inside the satisficing band [65, 80]. Pre-v0.3.4
+// equilibrium temperature parked inside the balanced satisficing band
+// [75, 83] (PreferredMid=80) with PID jitter. Pre-v0.3.4
 // projection synth only adjusted TempMean → variance + fan-change-rate
 // were identical across (now, up, down) projections → all three scored
 // equally → bestDelta=0 → "settled" forever. Post-fix the synth models
@@ -342,22 +342,22 @@ func TestReconciler_Step_DriftUp_InBand_AbovetTarget_Balanced(t *testing.T) {
 	//   ScoreUp   = 0 + 0.3*var(0.353) + 0.3*fcr(1.5) = 0.5559
 	//   ScoreDown = 0 + 0.3*var(1.426) + 0.3*fcr(2.5) = 1.1778
 	//
-	// ScoreUp < ScoreNow < ScoreDown → drift_up, NewTarget = 73.
+	// ScoreUp < ScoreNow < ScoreDown → drift_up, NewTarget = 81.
 	found := false
 	for _, a := range actions {
 		if a.Class != envelope.PassiveGPU {
 			continue
 		}
 		found = true
-		if a.OldTarget != 72 {
-			t.Errorf("OldTarget=%d, want 72 (balanced/PreferredMid)", a.OldTarget)
+		if a.OldTarget != 80 {
+			t.Errorf("OldTarget=%d, want 80 (balanced/PreferredMid)", a.OldTarget)
 		}
 		if a.Reason != DriftReasonUp {
 			t.Errorf("Reason=%s, want %s. ScoreNow=%.4f ScoreUp=%.4f ScoreDown=%.4f",
 				a.Reason, DriftReasonUp, a.ScoreNow, a.ScoreUp, a.ScoreDown)
 		}
-		if a.NewTarget != 73 {
-			t.Errorf("NewTarget=%d, want 73", a.NewTarget)
+		if a.NewTarget != 81 {
+			t.Errorf("NewTarget=%d, want 81", a.NewTarget)
 		}
 		if !(a.ScoreUp < a.ScoreNow && a.ScoreNow < a.ScoreDown) {
 			t.Errorf("score ordering broken: ScoreUp=%.4f ScoreNow=%.4f ScoreDown=%.4f (want up<now<down)",
@@ -712,12 +712,12 @@ func TestReconciler_Step_DownDriftStillWorks_WithFanHeadroom(t *testing.T) {
 	o := NewObserver(10, 10.0)
 	nowBase := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
 
-	// Temp above PreferredHigh (80) at 83°C, fan cruising at ~55% — lots of
+	// Temp above PreferredHigh (83) at 86°C, fan cruising at ~55% — lots of
 	// cooling headroom, so demanding a colder target is achievable.
 	for i := 0; i < 10; i++ {
 		o.Add(envelope.PassiveGPU, Sample{
 			Timestamp:    nowBase.Add(time.Duration(i) * 30 * time.Second),
-			TempCelsius:  83.0,
+			TempCelsius:  86.0,
 			FanDemandPct: 55,
 			InletCelsius: 22.0,
 		})
@@ -742,7 +742,7 @@ func TestReconciler_Step_DownDriftStillWorks_WithFanHeadroom(t *testing.T) {
 
 	r.mu.Lock()
 	cs := r.state.Classes[envelope.PassiveGPU]
-	cs.TargetCelsius = float64(env.MaxSafe - 1) // 84, above the 83°C equilibrium
+	cs.TargetCelsius = float64(env.MaxSafe - 1) // 85, below the 86°C equilibrium
 	cs.LastUpdate = nowBase.Add(time.Minute)
 	r.state.Classes[envelope.PassiveGPU] = cs
 	r.mu.Unlock()

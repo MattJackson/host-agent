@@ -117,7 +117,7 @@ func TestIntegration_Load_Mode_Plus_PerClassEnvOverride(t *testing.T) {
 		t.Errorf("CPUDeadband = %d want 3 (mode-derived since CPU_DEADBAND unset)", cfg.CPUDeadband)
 	}
 
-	wantGPU := 72
+	wantGPU := 80
 	wantGPUDeadband := 3
 	if cfg.GPUTarget != wantGPU || cfg.GPUDeadband != wantGPUDeadband {
 		t.Errorf("GPU target/deadband = %d/%d want %d/3 (Balanced)", cfg.GPUTarget, cfg.GPUDeadband, wantGPU)
@@ -155,7 +155,7 @@ func TestIntegration_Load_Mode_ReplacesProfileTargets(t *testing.T) {
 	}
 
 	// Profile GPU_TARGET=80 yields to mode-derived MaxCool PreferredLow=65.
-	wantGPU := 65
+	wantGPU := 75
 	if cfg.GPUTarget != wantGPU {
 		t.Errorf("GPUTarget = %d want %d (mode-derived, profile yielded)", cfg.GPUTarget, wantGPU)
 	}

@@ -57,11 +57,18 @@ var DefaultEnvelopes = map[Class]Envelope{
 		Emergency:     90,
 	},
 	PassiveGPU: {
+		// Passive datacenter cards (e.g. Tesla P4/P40) are spec'd to run
+		// hot — the P4 throttles ~91°C, shuts down ~95°C. Holding one at
+		// 80°C costs 87-99% chassis fan for no thermal benefit. Tuned up
+		// (v0.3.11) so min-noise lets the card settle ~84-85°C with much
+		// quieter fans, keeping ~6°C of throttle margin. Emergency stays
+		// at 90 (~1°C below the hardware thermal-slowdown point) as the
+		// hard backstop.
 		MinSafe:       30,
-		PreferredLow:  65,
-		PreferredMid:  72,
-		PreferredHigh: 80,
-		MaxSafe:       85,
+		PreferredLow:  75,
+		PreferredMid:  80,
+		PreferredHigh: 83,
+		MaxSafe:       86, // adaptive drift ceiling = MaxSafe-1 = 85
 		Emergency:     90,
 	},
 	HDD: {

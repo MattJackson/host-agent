@@ -6,6 +6,34 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.3.11] — 2026-06-16
+
+### Changed — raise the `passive_gpu` thermal envelope (quieter chassis fans for hot-tolerant datacenter cards)
+
+**Why**: on docker-1 the binding `passive_gpu` is a Tesla P4 — a 75W passive datacenter card spec'd to run hot (hardware thermal slowdown ~91°C, shutdown ~95°C). The previous envelope (`PreferredHigh=80`, `MaxSafe=85`) made min-noise hold it at ~82–85°C, which *forced* chassis fans to 87–99% under load for no thermal benefit. The card's `hw_thermal_slowdown`/`sw_thermal_slowdown` counters were `0` across all observed load — i.e. 6–10°C of unused headroom.
+
+**Change**: `passive_gpu` envelope raised to let the card settle ~84–85°C with quieter fans, keeping a ~6°C throttle margin:
+
+| field | old | new |
+|-------|-----|-----|
+| PreferredLow  | 65 | 75 |
+| PreferredMid  | 72 | 80 |
+| PreferredHigh | 80 | 83 |
+| MaxSafe       | 85 | 86 (adaptive drift ceiling = MaxSafe-1 = **85**) |
+| Emergency     | 90 | 90 (unchanged — ~1°C below the hardware slowdown point, hard backstop) |
+
+In min-noise the adaptive target now drifts toward 83 and the saturation-relief ceiling is 85, so under sustained load the card holds ~84–85°C with materially lower fan demand instead of being pinned near 80°C. Idle behavior is unchanged (fans drop when the card is cool). No controller-logic change — this is purely the per-class envelope. Emergency-first ordering is unaffected, and `config.Validate` still passes for all modes (`target < emergency`).
+
+This is a conservative first step (the card tolerates ~88°C); the ceiling can be raised further if more fan-noise reduction is wanted.
+
+### Tests
+
+Updated the envelope-dependent fixtures (exact-values, mode `InitialTarget`, the min-noise/max-cool score-formula bands, mode-derived GPU target integration tests, and the in-band drift / fan-headroom reconciler cases) to the new `passive_gpu` band.
+
+### Migration
+
+Drop-in image upgrade; Watchtower picks it up on the next 5-min poll. Hosts with a passive GPU will see its adaptive target drift up toward the new ceiling over the following reconcile cycles, easing chassis fans; the card will stabilize a few °C warmer (still well within spec). Other classes (CPU/HDD/SSD) and active GPUs are unaffected.
+
 ## [0.3.10] — 2026-06-15
 
 Hardening release from a full multi-pass code audit (fix → re-audit → repeat until clean) plus a large test-coverage expansion. No change to the v0.3.9 fan-control behavior; one real latent bug fixed (config validation), several observability/correctness gaps closed, and the audit caught three regressions introduced mid-pass (all fixed before release).

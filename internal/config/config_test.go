@@ -433,7 +433,7 @@ func TestApplyMode_PerClassEnvOverride_Wins(t *testing.T) {
 	if cfg.CPUTarget != 70 {
 		t.Errorf("CPUTarget = %d want 70 (override wins)", cfg.CPUTarget)
 	}
-	wantGPU := 72
+	wantGPU := 80
 	wantGPUDeadband := 3
 	if cfg.GPUTarget != wantGPU {
 		t.Errorf("GPUTarget = %d want %d", cfg.GPUTarget, wantGPU)
@@ -490,7 +490,7 @@ func TestApplyMode_DeadbandEnvOverride_Independent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	wantGPU := 72
+	wantGPU := 80
 	wantGPUDeadband := 6
 	if cfg.GPUTarget != wantGPU {
 		t.Errorf("GPUTarget = %d want %d (mode-derived)", cfg.GPUTarget, wantGPU)
