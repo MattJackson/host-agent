@@ -25,9 +25,19 @@ package learn
 // Params tunes the outer loop. Defaults are deliberately conservative — this is
 // a slow lifelong trimmer, not a fast servo.
 type Params struct {
-	// ToleranceC: dead zone around TARGET. While |steady-state - target| is
-	// within this, do nothing (prevents endless ±1°C twitching at the target).
-	ToleranceC float64
+	// ToleranceHotC / ToleranceCoolC: ASYMMETRIC dead zone around TARGET. The
+	// learner acts only when steady-state is more than ToleranceHotC ABOVE target
+	// (→ add fan) or at-or-more-than ToleranceCoolC BELOW target (→ reclaim fan).
+	//
+	// Asymmetry is the point: a hot tolerance > cool tolerance means the learner
+	// TOLERATES running a degree or two warm (so a card that naturally sits at
+	// target+1 isn't chased — the bug that ran docker-1's GPU fans up), but
+	// EAGERLY reclaims fan whenever the plant is at/below target (so a class that
+	// cooled after a transient hot spell doesn't stay over-fanned forever — the
+	// bug that left docker-2's 39°C drive at 51% fan). Net: it settles at the
+	// minimum fan that holds target, tolerating slightly warm over wasting fan.
+	ToleranceHotC  float64
+	ToleranceCoolC float64
 	// MaxStepC: largest ramp-start change per action, in °C. 1 = gentlest.
 	MaxStepC int
 	// SettleStdDev: only act when the windowed temperature standard deviation is
@@ -49,12 +59,13 @@ type Params struct {
 // DefaultParams returns conservative defaults for a slow disk/CPU plant.
 func DefaultParams(minRampStart, maxRampStart int) Params {
 	return Params{
-		ToleranceC:   1.0,
-		MaxStepC:     1,
-		SettleStdDev: 1.5,
-		SatFanP90:    99,
-		MinRampStart: minRampStart,
-		MaxRampStart: maxRampStart,
+		ToleranceHotC:  2.0, // tolerate up to +2°C over target before adding fan (no chase)
+		ToleranceCoolC: 1.0, // reclaim fan once ≥1°C below target (don't stay over-fanned)
+		MaxStepC:       1,
+		SettleStdDev:   1.5,
+		SatFanP90:      99,
+		MinRampStart:   minRampStart,
+		MaxRampStart:   maxRampStart,
 	}
 }
 
@@ -96,40 +107,44 @@ func TargetSeek(steadyTempC, tempStdDev, fanDemandP90 float64, currentRampStart,
 	}
 
 	errC := steadyTempC - float64(targetC) // >0 too hot, <0 too cool
-	if errC < 0 {
-		errC = -errC
-	}
-	if errC <= p.ToleranceC {
-		return hold(ReasonInTolerance)
+
+	stepFor := func(mag float64) int {
+		s := int(mag + 0.5) // round
+		if s > p.MaxStepC {
+			s = p.MaxStepC
+		}
+		if s < 1 {
+			s = 1
+		}
+		return s
 	}
 
-	step := int(errC + 0.5) // round
-	if step > p.MaxStepC {
-		step = p.MaxStepC
-	}
-	if step < 1 {
-		step = 1
-	}
-
-	if steadyTempC > float64(targetC) {
-		// Too hot → want MORE fan → LOWER ramp-start.
+	switch {
+	case errC > p.ToleranceHotC:
+		// More than the hot tolerance above target → want MORE fan → LOWER
+		// ramp-start. Skip if the fan's already saturated (can't deliver more).
 		if fanDemandP90 >= p.SatFanP90 {
-			// Fan already saturated — lowering ramp-start can't deliver more air.
 			return hold(ReasonSaturated)
 		}
-		nr := clampInt(currentRampStart-step, p.MinRampStart, p.MaxRampStart)
+		nr := clampInt(currentRampStart-stepFor(errC), p.MinRampStart, p.MaxRampStart)
 		if nr == currentRampStart {
 			return hold(ReasonClamped)
 		}
 		return Decision{NewRampStart: nr, Acted: true, Reason: ReasonTooHot}
-	}
 
-	// Too cool → using more fan than needed → RAISE ramp-start (quieter).
-	nr := clampInt(currentRampStart+step, p.MinRampStart, p.MaxRampStart)
-	if nr == currentRampStart {
-		return hold(ReasonClamped)
+	case errC <= -p.ToleranceCoolC:
+		// At/below the cool tolerance under target → using more fan than needed
+		// → RAISE ramp-start (reclaim fan, quieter).
+		nr := clampInt(currentRampStart+stepFor(-errC), p.MinRampStart, p.MaxRampStart)
+		if nr == currentRampStart {
+			return hold(ReasonClamped)
+		}
+		return Decision{NewRampStart: nr, Acted: true, Reason: ReasonTooCool}
+
+	default:
+		// Within the asymmetric band [target-cool, target+hot] → leave it.
+		return hold(ReasonInTolerance)
 	}
-	return Decision{NewRampStart: nr, Acted: true, Reason: ReasonTooCool}
 }
 
 func clampInt(v, lo, hi int) int {

@@ -20,6 +20,29 @@ func TestTargetSeek_InTolerance_HoldsOff(t *testing.T) {
 	}
 }
 
+func TestTargetSeek_AsymmetricBand(t *testing.T) {
+	p := params() // hotTol 2, coolTol 1
+	// +1 over target → tolerate (no chase). This is the GPU-chase fix: a card
+	// that naturally runs a degree warm must NOT get fans ratcheted up.
+	if d := TargetSeek(39, 0.3, 60, 33, 38, p); d.Acted {
+		t.Errorf("+1 over target must hold (tolerate warm), got %+v", d)
+	}
+	// +2 over target → still tolerate (edge of hot band).
+	if d := TargetSeek(40, 0.3, 60, 33, 38, p); d.Acted {
+		t.Errorf("+2 over target must hold (hot tolerance edge), got %+v", d)
+	}
+	// +3 over target → now act (add fan).
+	if d := TargetSeek(41, 0.3, 60, 33, 38, p); !d.Acted || d.Reason != ReasonTooHot {
+		t.Errorf("+3 over target must add fan, got %+v", d)
+	}
+	// -1 below target → RECLAIM fan (raise comfort). This is the over-fan fix:
+	// a class that cooled after a hot spell must give the fan back, not sit
+	// over-fanned within a symmetric deadband.
+	if d := TargetSeek(37, 0.3, 60, 33, 38, p); !d.Acted || d.Reason != ReasonTooCool {
+		t.Errorf("-1 below target must reclaim fan, got %+v", d)
+	}
+}
+
 func TestTargetSeek_TooHot_LowersRampStart(t *testing.T) {
 	// Steady 42 vs target 38 → too hot → more fan → ramp-start DOWN.
 	d := TargetSeek(42, 0.3, 60, 33, 38, params())
@@ -89,9 +112,11 @@ func TestTargetSeek_ConvergesAndHolds(t *testing.T) {
 			}
 		}
 		steady := rampStart + offset
-		// Converged to within tolerance of target.
-		if steady < target-1 || steady > target+1 {
-			t.Errorf("start=%d: did not converge — steady=%d target=%d (rampStart=%d)", start, steady, target, rampStart)
+		// Converged into the asymmetric hold band [target-cool, target+hot] =
+		// [37, 40]: from above it stops at target+2 (tolerate warm to save fan),
+		// from below it reaches target. Either way it must settle and hold.
+		if steady < target-1 || steady > target+2 {
+			t.Errorf("start=%d: did not converge into band — steady=%d target=%d (rampStart=%d)", start, steady, target, rampStart)
 		}
 		// And HELD: the last several ticks must all be no-op (in_tolerance), not
 		// oscillating between too_hot/too_cool.

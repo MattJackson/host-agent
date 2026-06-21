@@ -280,3 +280,67 @@ maintained by gentle lifelong trimming. The learner adjusts the *means* (how muc
 fan) and never the *ends* (the target), so it learns each box without ever
 fighting what the operator asked for: optimal on day one, stays optimal, never
 hot to "save noise."
+
+---
+
+## 11. As-built (v0.6.x) + the invariants that make it a system
+
+This is the system actually shipped, and the **invariants** it rests on — the
+things that must stay true for it to be a coherent design rather than a pile of
+fixes. Every v0.6.x change was converging a *parameter* of this design to what
+real hardware required, not bolting on new mechanism.
+
+**The architecture (cascade / two-timescale control + feedforward + safety):**
+
+```
+            ┌── SAFETY (independent, instant, never paced) ──────────────┐
+            │  temp ≥ emergency → 100% ;  sensor read fail → 100%        │
+            └────────────────────────────────────────────────────────────┘
+  FEEDFORWARD                INNER LOOP                 OUTER LOOP
+  (first-run scan)      (every cycle, memoryless)   (slow, settle-gated)
+  measure fan→temp  →   fan = Curve(temp, comfort,  →  TargetSeek nudges
+  place comfort to       emergency)  — can't wind      comfort ≤1°C so
+  hold target            up or hunt, any plant         steady-state → target
+```
+
+**Invariants (must hold; each has a test or a structural guarantee):**
+
+1. **Inner loop is memoryless.** `Curve` is a pure function of current temp →
+   cannot wind up or hunt regardless of plant dead-time. *This is the
+   foundation; everything else sits on top of a loop that is stable by
+   construction.*
+2. **Inner loop always provides temp-proportional cooling**, independent of the
+   learner. ⇒ the learner's tolerance band can never make the plant unsafe (a
+   hot plant gets fan from the curve no matter what the learner believes).
+3. **Outer-loop horizon < action cadence.** The learner's observation window
+   (20 min) must be short relative to its cadence (10 min) so it sees its own
+   effect before acting again. Violating this *is* outer-loop windup — the
+   docker-1 GPU chase (v0.6.3 fixed the 120-min window). **Design rule:
+   window ≈ 1–2× cadence, never ≫.**
+4. **Learner moves the means, never the ends.** It adjusts `comfort` (how much
+   fan), never `TARGET`. ⇒ it can learn each box's airflow without ever
+   overriding operator intent (the v0.3.x drift bug, structurally impossible
+   now).
+5. **Objective is asymmetric** = "minimum fan that holds target": tolerate
+   `+ToleranceHotC` warm (don't chase), reclaim fan at `-ToleranceCoolC` cool
+   (don't over-fan). Symmetric tolerance violates the objective (over-fans after
+   any hot blip — v0.6.4 fixed it).
+6. **Learner is bounded + settle-gated + saturation-aware.** ≤1°C/tick, clamped
+   to `[floor, emergency-1]`, acts only on a low-variance window, won't chase a
+   saturated fan. ⇒ worst case of a bad estimate is one small reversible nudge.
+7. **Safety is independent of both loops.** Emergency trip and read-fail
+   failsafe short-circuit before any curve/learner math and are never paced. ⇒
+   no learner/scan state can defeat the thermal backstop.
+
+**Per-class envelope is the only operator surface:** `TARGET` (hold here) +
+`EMERGENCY` (hard cap). Everything else (comfort, the learned curve placement)
+is derived/learned, not hand-tuned. `GPU_TARGET=87` (v0.6.2) is an *envelope*
+value — the card's achievable equilibrium — not a control-logic change.
+
+**Why this is a design, not patches:** the mechanism set has been fixed since
+v0.6.0 (scan + curve + learner + safety). v0.6.1–v0.6.4 changed only
+*parameters/objective-shape* of that fixed mechanism (metric emission, GPU
+envelope, window horizon, tolerance asymmetry) — each one forced by an invariant
+above that real hardware exposed. No new control paths were added reactively.
+The remaining known refinement is documented (per-class tolerance if one
+envelope proves too tight), not discovered ad hoc.
