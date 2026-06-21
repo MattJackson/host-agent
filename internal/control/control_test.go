@@ -30,22 +30,24 @@ func TestStepPID_AbstainOnZeroTemp(t *testing.T) {
 	}
 }
 
-func TestStepPID_DeadbandDriftsTowardMinFan(t *testing.T) {
-	// At target, in deadband, current > minFan → drift down by rate,
-	// clamped to minFan.
+func TestStepPID_DeadbandHolds(t *testing.T) {
+	// Inside the deadband the PID HOLDS the current fan speed (clamped to
+	// [MinFan, MaxFan]) — it neither ramps nor coasts. Below the band it
+	// steps down via normal P+D.
 	cases := []struct {
 		name                                       string
 		temp, target, deadband, current, min, rate int
 		want                                       int
 	}{
-		{"at target, current well above min", 70, 70, 3, 50, 20, 3, 47},
-		{"at target, current near min", 70, 70, 3, 21, 20, 3, 20},
+		{"at target, current well above min", 70, 70, 3, 50, 20, 3, 50},
+		{"at target, current near min", 70, 70, 3, 21, 20, 3, 21},
 		{"at target, current already at min", 70, 70, 3, 20, 20, 3, 20},
-		{"1°C below target (inside deadband)", 69, 70, 3, 50, 20, 3, 47},
-		{"3°C below target (deadband edge)", 67, 70, 3, 50, 20, 3, 47},
-		// 4°C below target = outside deadband → PID step, not drift.
+		{"1°C below target (inside deadband)", 69, 70, 3, 50, 20, 3, 50},
+		{"3°C below target (deadband edge)", 67, 70, 3, 50, 20, 3, 50},
+		{"1°C above target (inside deadband)", 71, 70, 3, 50, 20, 3, 50},
+		// 4°C below target = outside deadband → PID step, not hold.
 		// error=-4, step = -4*0.5 = -2, cand = 50 + -2 = 48.
-		{"4°C below target (PID, not drift)", 66, 70, 3, 50, 20, 3, 48},
+		{"4°C below target (PID, not hold)", 66, 70, 3, 50, 20, 3, 48},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -63,10 +65,10 @@ func TestStepPID_DeadbandDriftsTowardMinFan(t *testing.T) {
 	}
 }
 
-func TestStepPID_SymmetricDeadband_CoastsAboveTargetInBand(t *testing.T) {
-	// v0.3.12: above target but inside |error| <= deadband, the PID must
-	// now COAST toward MinFan (not ramp). This is what stops the saw-tooth
-	// hunt; the caller's smooth proximity floor then governs the band.
+func TestStepPID_SymmetricDeadband_HoldsAboveTargetInBand(t *testing.T) {
+	// Above target but inside |error| <= deadband, the PID HOLDS the current
+	// speed (tolerate a little hot without ramping). Outside the band on the
+	// high side, P+D ramp re-engages.
 	p := PIDParams{
 		Temp:              71, // +1 above target, inside deadband
 		Target:            70,
@@ -79,9 +81,9 @@ func TestStepPID_SymmetricDeadband_CoastsAboveTargetInBand(t *testing.T) {
 		DerivativeGain:    1.0,
 		DeadbandDriftRate: 3,
 	}
-	// Inside deadband (|+1| <= 3) → coast down by rate: 50 - 3 = 47.
-	if got := StepPID(p); got != 47 {
-		t.Errorf("+1 above target, inside deadband: got %d want 47 (coast down)", got)
+	// Inside deadband (|+1| <= 3) → hold: 50.
+	if got := StepPID(p); got != 50 {
+		t.Errorf("+1 above target, inside deadband: got %d want 50 (hold)", got)
 	}
 
 	// Just OUTSIDE the deadband on the high side → P+D ramp re-engages.
@@ -93,13 +95,13 @@ func TestStepPID_SymmetricDeadband_CoastsAboveTargetInBand(t *testing.T) {
 	}
 }
 
-// TestStepPID_NoHuntAroundTarget is the v0.3.12 anti-hunt regression: with
-// temp oscillating ±1°C around the target INSIDE the deadband (the docker-1
-// P4 load pattern), the PID candidate must monotonically coast down — never
-// ramp up on the +1°C samples — so the smooth proximity floor can govern
-// instead of the old saw-tooth.
+// TestStepPID_NoHuntAroundTarget is the anti-hunt regression: with temp
+// oscillating ±1°C around the target INSIDE the deadband (the steady-state
+// load pattern), the PID candidate must HOLD steady — never ramp up and
+// never collapse to MinFan on the in-band samples. That hold is what kills
+// the limit cycle: no collapse means no subsequent over-temp rebound.
 func TestStepPID_NoHuntAroundTarget(t *testing.T) {
-	cur := 90                                      // start high (as if previously ramped)
+	cur := 60                                      // some prior steady-state speed
 	temps := []int{85, 84, 85, 84, 85, 86, 84, 85} // jittering around target 84, all within deadband 7
 	last := 85
 	for _, temp := range temps {
@@ -109,16 +111,15 @@ func TestStepPID_NoHuntAroundTarget(t *testing.T) {
 			FanGain: 0.5, DerivativeGain: 1.0, DeadbandDriftRate: 3,
 		}
 		next := StepPID(p)
-		if next > cur {
-			t.Errorf("hunt detected: temp=%d (in-band) raised candidate %d→%d; must coast down", temp, cur, next)
+		if next != cur {
+			t.Errorf("hunt detected: temp=%d (in-band) moved candidate %d→%d; must hold steady", temp, cur, next)
 		}
 		cur = next
 		last = temp
 	}
-	// After 8 cycles of coasting from 90 at rate 3, it should have fallen
-	// well toward MinFan (proximity floor will catch the real level).
-	if cur > 90-3*4 {
-		t.Errorf("candidate did not coast down as expected: ended at %d", cur)
+	// Held steady across all in-band cycles — no ramp, no collapse.
+	if cur != 60 {
+		t.Errorf("candidate did not hold steady: ended at %d want 60", cur)
 	}
 }
 

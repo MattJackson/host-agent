@@ -43,7 +43,7 @@ fan_controller_class_emergency_celsius{class="ssd"} 65
 
 # HELP fan_controller_class_candidate_percent Per-class PID candidate fan speed. max() across all classes drives fans.
 # TYPE fan_controller_class_candidate_percent gauge
-fan_controller_class_candidate_percent{class="cpu"} 25
+fan_controller_class_candidate_percent{class="cpu"} 28
 fan_controller_class_candidate_percent{class="passive_gpu"} 0
 fan_controller_class_candidate_percent{class="hdd"} 0
 fan_controller_class_candidate_percent{class="ssd"} 0

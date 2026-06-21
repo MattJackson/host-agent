@@ -71,9 +71,9 @@ func TestEndToEnd_ThreeCyclesMatchesGolden(t *testing.T) {
 	//     window=10, outer edge=70, 55<70).
 	// 65: error=-5, |error|>3 → step = -5*.5 + (65-55)*1 = -2.5+10 = 7.5 → 8.
 	//     cand = 20+8 = 28. Floor still 0.
-	// 72: error=+2, inside deadband but error>0 → step = 2*.5 + (72-65)*1 = 8.
-	//     cand = 28+8 = 36. CPU_PF at 72: diff=72-70=2, f=20+(2/10)*80=36.
-	//     Both at 36 → tie → cpu wins (initial in MaxWins).
+	// 72: error=+2, |error|<=3 → inside deadband → HOLD: cand = 28.
+	//     CPU_PF at 72: diff=72-70=2, f=20+(2/10)*80=36. max(28,36)=36 →
+	//     proximity floor binds (source cpu_pf), setpoint=36.
 	reader := &stubReader{
 		readings: []sensors.Reading{
 			{CPUMax: 55, Details: "P0.t1:55 "},

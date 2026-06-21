@@ -44,16 +44,17 @@ type PIDParams struct {
 // + proximity floors + active-GPU assist; this function only computes
 // the candidate for ONE class.
 //
-// Behavior (matches bash exactly):
+// Behavior (three-zone thermostat):
 //   - Temp <= 0: return 0 (abstain — don't bind max() at any speed).
-//   - Inside the deadband (|temp-target| <= deadband, EITHER side): coast
-//     toward MinFan by DeadbandDriftRate, clamped to MinFan. The caller
-//     max()'s in the smooth proximity floor, which then governs the band
-//     (see the symmetric-deadband note in the body). NOT toward base — see
-//     bash comment for the stuck-at-base trap that caused.
+//   - Inside the deadband (|temp-target| <= deadband, EITHER side): HOLD the
+//     current fan speed (clamped to [MinFan, MaxFan]). Incremental control
+//     means holding parks the fan at the equilibrium-maintaining speed; see
+//     the symmetric-deadband note in the body for why this replaced the old
+//     coast-to-MinFan (which caused a limit cycle on tight envelopes).
 //   - Otherwise: step = error * FanGain + d_temp * DerivativeGain,
 //     rounded half-away-from-zero, then candidate = clamp(
-//     CurrentSpeed + step, MinFan, MaxFan).
+//     CurrentSpeed + step, MinFan, MaxFan). Above the band this ramps up;
+//     below the band (cool/idle host) it steps down toward MinFan.
 func StepPID(p PIDParams) int {
 	if p.Temp <= 0 {
 		return 0
@@ -65,34 +66,37 @@ func StepPID(p PIDParams) int {
 		dTemp = p.Temp - p.LastTemp
 	}
 
-	// Symmetric deadband: anywhere within ±deadband of target, coast the
-	// PID candidate DOWN toward MinFan rather than ramping. (v0.3.12 — was
-	// asymmetric: it coasted only at-or-below target and ramped the instant
-	// temp was 1°C above, which—because the card's load equilibrium sits
-	// right at target—made the fan saw-tooth: ramp up at target+1, drift
-	// down at target, repeat. That hunt is what made fans "all over the
-	// place" at a steady temperature.)
+	// Symmetric deadband: anywhere within ±deadband of target, HOLD the
+	// current fan speed — don't ramp, don't coast.
 	//
-	// Coasting down inside the whole band lets the candidate fall back to
-	// the proximity floor, which the caller max()'s in. The proximity floor
-	// is a SMOOTH, temperature-proportional curve (MinFan at emergency-window
-	// up to MaxFan at emergency) — so within the band the floor becomes the
-	// de-facto governor: a smooth, monotonic fan-vs-temp response with a
-	// single stable equilibrium, instead of the PID's bang-bang hunt. The
-	// high side stays safe because the floor ramps hard as temp approaches
-	// emergency and the emergency trip forces MaxFan above it; the PID only
-	// re-engages (below) once temp exceeds target+deadband, which for tight
-	// envelopes is at/above the emergency trip anyway.
+	// This is the three-zone thermostat the controller is supposed to be:
+	//   - temp > target+deadband  → P+D ramps fans UP (below)
+	//   - temp within ±deadband   → hold (we're within tolerance; leave it)
+	//   - temp < target-deadband  → P+D steps fans DOWN (below), so a
+	//     genuinely cool/idle host still eases to MinFan.
+	// Because this is an incremental controller (cand = CurrentSpeed + step),
+	// holding inside the band naturally parks the fan at the speed that
+	// maintains equilibrium, instead of fighting it.
 	//
-	// The adaptive reconciler widens this deadband when it observes variance,
-	// so the "settle zone" grows to absorb bursty load automatically — the
-	// learned-damping behavior, now actually honored on both sides.
+	// History: earlier versions coasted the candidate DOWN toward MinFan
+	// inside the band, relying on the proximity floor to act as a smooth
+	// governor. That only works when the floor's ramp overlaps the band —
+	// which it does NOT for tight envelopes like HDD (emergency 50, window 5
+	// → ramp starts at 45, but the band around a 44 target is 43–45). There
+	// the collapse-to-MinFan had no governor under it, so the fan dropped to
+	// minimum, the drive heated until it popped out of the band, the PID
+	// slammed it back, and it oscillated — the "fans all over the place at a
+	// steady temperature" limit cycle. Holding kills that wave at the source:
+	// a little over target = ramp gently and tolerate; within tolerance =
+	// stay put. The proximity floor remains as a pure safety backstop, max()'d
+	// in by the caller near the emergency trip.
+	//
+	// Deadband WIDTH is the per-mode tolerance knob (max-cool 2° … eco 5°):
+	// quieter modes tolerate more over-target before reacting, cooler modes
+	// react sooner. That — not moving the target — is the intended
+	// mode-dependent "how hot before we react" behavior.
 	if abs(error) <= p.Deadband {
-		cand := p.CurrentSpeed - p.DeadbandDriftRate
-		if cand < p.MinFan {
-			cand = p.MinFan
-		}
-		return cand
+		return clamp(p.CurrentSpeed, p.MinFan, p.MaxFan)
 	}
 
 	// Saturation escape: error > 0 AND already at MaxFan AND temp not

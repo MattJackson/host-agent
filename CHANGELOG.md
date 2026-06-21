@@ -6,6 +6,35 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.3.14] — 2026-06-20
+
+### Changed — target-drift is now OFF by default (the controller is a plain thermostat)
+
+**Why**: the adaptive reconciler moved the per-class *target temperature itself* over time to trade temperature for fan noise. That behavior was designed for a passive datacenter GPU (a Tesla P4/P40 equilibrates well above any sane fixed target, so holding one pins the fans at 100% forever for no thermal benefit). Applied uniformly to every class, it let cool-running hardware ride far above its configured setpoint just to stay quiet. Observed live on `unraid-1`: in **balanced** mode (HDD anchor 38°C) the reconciler had drifted the HDD target up to the `MaxSafe-1` ceiling of **44°C**, and the hottest drive then sat at **46°C** — 8°C above the setpoint the operator believed they had selected. A setpoint should be a setpoint, not a starting hint the controller is free to abandon.
+
+**Change**: target-drift no longer runs by default. The controller holds the mode-derived per-class target (`balanced` HDD = 38, etc.) and the PID does the work — a plain thermostat. Mode still selects *what* target you hold and *how* tolerantly you chase it (via deadband width), it just can't move the target out from under you. Re-enable the reconciler with `HOST_AGENT_ADAPTIVE_DRIFT=on` (backburnered, not deleted, pending a proper class-scoped GPU solution). The `adaptive_window_*` observation metrics keep flowing; the `adaptive_target_*`/`adaptive_mode_*` metrics go idle while drift is off.
+
+**Trade-off**: hosts with a hot-tolerant passive GPU will run their chassis fans louder than before, because the fans now chase the GPU's configured target instead of drifting up to quiet themselves. This is intentional — "good server with a loud GPU" until the GPU case is solved on its own terms rather than at the expense of every other component.
+
+### Fixed — fan limit cycle on tight envelopes (deadband now HOLDS instead of collapsing to MinFan)
+
+**Symptom**: a drive sitting near its target with the chassis fan "all over the place" — e.g. `unraid-1` HDD steady at 45–46°C with the setpoint sawtoothing 10→28→49→10. Churn, not cooling, at an essentially constant temperature.
+
+**Root cause**: inside the deadband, `control.StepPID` coasted the candidate *down toward MinFan* (`CurrentSpeed - DeadbandDriftRate`), relying on the proximity floor to act as a smooth governor underneath. That only works when the floor's ramp overlaps the operating band. For a tight envelope like HDD (emergency 50, approach window 5 → floor ramp starts at 45) the band around a 44 target (43–45) has **no floor under it**, so the fan collapsed to minimum, the drive heated until it popped out of the band, the PID slammed it back, and it oscillated.
+
+**Fix**: inside `|temp-target| <= deadband` the PID now **HOLDS** the current fan speed instead of coasting. Because this is an incremental controller (`cand = CurrentSpeed + step`), holding parks the fan at the equilibrium-maintaining speed. The result is a clean three-zone thermostat: ramp up above the band, hold within it (tolerate a little over-target without screaming), step down below it (a cool/idle host still eases to MinFan). The proximity floor remains a pure safety backstop near the emergency trip. Deadband *width* stays the per-mode tolerance knob (max-cool 2° … eco 5°).
+
+### Tests
+
+- `internal/control/control_test.go::TestStepPID_DeadbandHolds` — within ±deadband (either side) the candidate holds the current speed; below the band it steps down via P+D.
+- `TestStepPID_SymmetricDeadband_HoldsAboveTargetInBand` — +1°C over target inside the band holds; +4°C (outside) re-engages the ramp.
+- `TestStepPID_NoHuntAroundTarget` — temp jittering ±1°C in-band holds the candidate dead steady (no ramp, no collapse) — the anti-limit-cycle regression.
+- `cmd/fan-controller` e2e golden updated: the only behavioral delta is the in-band CPU candidate (25→28, hold vs coast); the bound setpoint is unchanged.
+
+### Migration
+
+Drop-in upgrade. On first start the controller holds your mode's targets instead of any previously-drifted values; a stale persisted reconciler state file is ignored while drift is off. Expect quieter, steadier fans on disk/CPU hosts and louder fans on passive-GPU hosts. To restore the prior adaptive behavior, set `HOST_AGENT_ADAPTIVE_DRIFT=on`.
+
 ## [0.3.13] — 2026-06-16
 
 ### Fixed — ~10-min fan-hunt window after every restart (seed live targets from persisted state)

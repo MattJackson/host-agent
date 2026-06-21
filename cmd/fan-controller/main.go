@@ -115,9 +115,20 @@ func main() {
 			adaptiveCycleMin = n
 		}
 	}
-	adaptiveDisabled := strings.EqualFold(os.Getenv("HOST_AGENT_ADAPTIVE_DISABLED"), "true") ||
-		os.Getenv("HOST_AGENT_ADAPTIVE_DISABLED") == "1" ||
-		strings.EqualFold(os.Getenv("HOST_AGENT_ADAPTIVE_DISABLED"), "yes")
+	// Adaptive target-drift is OFF by default: the controller is a plain
+	// thermostat that holds the mode-derived per-class target, and the PID
+	// does the work. Drift (moving the target itself over time to trade
+	// temperature for fan noise) was a passive-GPU-specific behavior that,
+	// applied uniformly, let cool-running classes (HDD/CPU/SSD) ride well
+	// above their configured setpoint to save noise — e.g. a "balanced"
+	// HDD target of 38 silently drifting to the MaxSafe-1 ceiling of 44.
+	// Backburnered (not deleted) pending a proper, class-scoped GPU solution:
+	// set HOST_AGENT_ADAPTIVE_DRIFT=on to re-enable the reconciler.
+	driftEnabled := strings.EqualFold(os.Getenv("HOST_AGENT_ADAPTIVE_DRIFT"), "on") ||
+		strings.EqualFold(os.Getenv("HOST_AGENT_ADAPTIVE_DRIFT"), "true") ||
+		os.Getenv("HOST_AGENT_ADAPTIVE_DRIFT") == "1" ||
+		strings.EqualFold(os.Getenv("HOST_AGENT_ADAPTIVE_DRIFT"), "yes")
+	adaptiveDisabled := !driftEnabled
 
 	statePath := adaptive.DefaultStatePath
 	if sp := os.Getenv("HOST_AGENT_ADAPTIVE_STATE_PATH"); sp != "" {
@@ -186,8 +197,9 @@ func main() {
 	liveTargets := livetargets.New()
 
 	if adaptiveDisabled {
-		logger.Printf("adaptive reconciler: disabled by HOST_AGENT_ADAPTIVE_DISABLED")
+		logger.Printf("adaptive target-drift: OFF (thermostat mode — holding mode targets; set HOST_AGENT_ADAPTIVE_DRIFT=on to re-enable)")
 	} else {
+		logger.Printf("adaptive target-drift: ON (HOST_AGENT_ADAPTIVE_DRIFT)")
 		// Seed liveTargets from the reconciler's PERSISTED state so the PID
 		// uses the learned target/deadband from cycle 1. Without this there's
 		// an ADAPTIVE_CYCLE_MINUTES (~10 min) window after every restart where
