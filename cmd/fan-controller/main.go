@@ -135,7 +135,7 @@ func main() {
 		statePath = sp
 	}
 
-	windowMinutes := 120
+	windowMinutes := 20
 	if v := os.Getenv("OBSERVER_WINDOW_MINUTES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			windowMinutes = n
@@ -420,13 +420,16 @@ func logActiveProfile(l controller.Logger, cfg *config.Config) {
 // v2: build observer for adaptive controller. Phase 2 of the v2
 // rollout — this is READ-ONLY in this phase (no decisions are made
 // from the observed stats; that's T12+). Window size derives from
-// OBSERVER_WINDOW_MINUTES (default 120) × 60 / cfg.IntervalSec.
+// OBSERVER_WINDOW_MINUTES (default 20) × 60 / cfg.IntervalSec. Short by
+// design: the v0.5.0 learner reads this window's p50 as its steady-state
+// estimate, so a long window would lag the plant and make the learner overshoot
+// (see the inline note at the other windowMinutes default).
 //
 // Inlet temp is not yet plumbed through internal/sensors.Reading;
 // we pass 0 for InletCelsius until a later task adds it. The
 // inlet-jump reset feature is therefore a no-op in Phase 2.
 func buildObserver(logger controller.Logger, cfg *config.Config) *adaptive.Observer {
-	windowMinutes := 120
+	windowMinutes := 20
 	if v := os.Getenv("OBSERVER_WINDOW_MINUTES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			windowMinutes = n
