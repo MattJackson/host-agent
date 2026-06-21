@@ -245,6 +245,11 @@ func main() {
 	cpu := sensors.NewCPU(r, osFS{})
 	reader := &compositeReader{cpu: cpu, gpu: gpu, smartctl: smartctl}
 
+	// v0.5.0: overlay any persisted learned curve comfort onto cfg so the agent
+	// resumes its converged operating point instead of relearning from the
+	// profile default each boot.
+	loadLearnedComfort(learnedStatePath, cfg, logger)
+
 	c := controller.New(cfg, ipmiClient, reader, logger, stateFile, metricsFile)
 	c.LoadState()
 
@@ -265,6 +270,13 @@ func main() {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
+	// v0.5.0 target-seeking learner cadence. Fires every adaptiveCycleMin; the
+	// first fire is one full interval in, giving the observer window time to
+	// fill with settled data before the learner acts (belt-and-suspenders with
+	// the learner's own settle gate).
+	learnInterval := time.Duration(adaptiveCycleMin) * time.Minute
+	lastLearn := time.Now()
 
 	// First cycle runs immediately (don't wait for the first tick).
 	// Pick up any pending live-target updates before the cycle reads cfg.
@@ -298,6 +310,16 @@ func main() {
 			sampleObserver(obs, c)
 			if err := adaptive.WriteAdaptiveMetrics(adaptiveMetricsFile, obs, recon); err != nil {
 				logger.Printf("WARN: adaptive metrics write: %v", err)
+			}
+			// v0.5.0: slow target-seeking learner. Same goroutine as the cycle,
+			// so updating cfg.*Comfort here is race-free w.r.t. runCycle.
+			if time.Since(lastLearn) >= learnInterval {
+				lastLearn = time.Now()
+				if runLearnTick(cfg, obs, logger) {
+					if err := saveLearnedComfort(learnedStatePath, cfg); err != nil {
+						logger.Printf("WARN: learn persist: %v", err)
+					}
+				}
 			}
 			// Persist observer window so it survives container restart.
 			// Best-effort; persistence errors are non-fatal.

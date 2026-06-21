@@ -99,7 +99,7 @@ func TestLoad_DefaultProfileRoundTrip(t *testing.T) {
 		"CPUDeadband":              3,
 		"CPUEmergency":             80,
 		"CPUApproachWindow":        10,
-		"GPUTarget":                83,
+		"GPUTarget":                86,
 		"GPUDeadband":              2,
 		"GPUEmergency":             90,
 		"GPUApproachWindow":        7,

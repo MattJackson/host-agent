@@ -6,6 +6,54 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-06-21
+
+### Added — target-seeking learner (the adaptive layer, with the right objective)
+
+Brings back continuous learning — the original adaptive vision — but pointed at
+the correct goal. Operator goal, in their words: *"get me to the temp, stay
+there, fans optimal (not bouncing), as quiet as possible to maintain that temp."*
+That is one constrained objective, **hold TARGET at the minimum fan that
+maintains it**, because the quietest a box can run while holding its target IS
+the equilibrium fan that settles it there. Full design:
+`docs/fan-controller-v5-design.md`.
+
+**Two-timescale controller:**
+- **Inner loop** (every cycle, memoryless): v0.4.0's proportional curve — always
+  stable, can't wind up or hunt.
+- **Outer loop** (slow, `internal/learn`): observe each class's *settled*
+  steady-state temperature (window p50) and nudge the curve's ramp-start so
+  steady-state → TARGET. Too hot → lower ramp-start (more fan); too cool → raise
+  it (less fan — the "as quiet as possible" half). It acts **only on a settled
+  window** (stddev gate) and by **≤1°C per ~10-min tick**, i.e. integral action
+  at the plant's settling timescale — so it removes the curve's steady-state
+  offset *without* the dead-time limit cycle the old per-cycle PID suffered.
+
+**It adjusts the means (fan), never the ends (TARGET)** — the structural fix for
+the v0.3.x bug where the old reconciler optimized noise by moving the target
+itself and ran drives hot. `*_TARGET` is now an honored setpoint the system
+learns to hit; the learned ramp-start is persisted (`state/learned.json`) so the
+agent resumes its converged point across restarts.
+
+### Changed
+- `GPU_TARGET` default 83 → **86**: the learner's goal must be the card's
+  *achievable* sustained-load equilibrium, or it would drive fans to max chasing
+  an unreachable target (the old pinning failure). 86 sits ~4°C under the 90
+  slowdown.
+- `dell_xc730xd_12.env` (unraid-1 NAS): `HDD_TARGET=38` (cool-longevity band),
+  `HDD_COMFORT=31` seed; the learner trims comfort to hold 38 at minimum fan.
+
+### Safety
+- Emergency trip and read-fail fail-safe unchanged and instant. The learner runs
+  in the control goroutine (no races), is clamped to `[20°C, emergency-1]`, won't
+  chase a saturated fan, and the inner curve runs correctly even if the learner
+  never acts — learning is an optimization on top of a safe controller.
+
+### Observability
+- The learner logs every adjustment (`learn[class]: steady=… target=… → reason,
+  comfort a→b`) so its behavior is visible — the old reconciler was opaque, which
+  is how its drift-up bug hid for weeks.
+
 ## [0.4.0] — 2026-06-21
 
 ### Changed — one control law for every class (memoryless proportional curve)
