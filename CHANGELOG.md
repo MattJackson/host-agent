@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.3.16] — 2026-06-20
+
+### Changed — per-server HDD tuning for the XC730xd-12 (target the measured stable point)
+
+**Context**: with v0.3.15's pacing, `unraid-1`'s 12-bay array stopped overshooting but converged toward the 40°C shipped default very slowly — sitting at ~45°C for ~25 min after each restart while the paced fan crawled up to the ~33% needed to hold 40. Live characterization explains why: this cage + 60mm fans give the array a **~4.5 min thermal dead time with its time constant about equal to it**, and a natural min-fan rest of ~45-46°C. On a plant where dead time ≈ time constant you can have *stable* or *tight-to-40*, not both — servoing tightly to 40 is inherently twitchy/slow.
+
+**Change**: tune `profiles/dell_xc730xd_12.env` to the measured **stable point — `HDD_TARGET=43`, `HDD_DEADBAND=1`**. 43°C is where this array holds rock-steady at a modest steady fan (~25%) with no hunt and no slow hot transit — cooler than the ~46°C it drifted to before drift was removed, and comfortably under the 50°C emergency. The tight deadband is required for the target to bite: the band's top edge (`target+deadband=44`) must sit below the ~45°C natural rest, or the drive just parks at the band edge and the fan never engages.
+
+This is a profile-only change — the shipped default stays `HDD_TARGET=40` for hosts whose disk plants tolerate tighter servoing. It's the first concrete per-server tune; a future auto-tune mode will measure each box's dead time / natural rest and pick this automatically.
+
 ## [0.3.15] — 2026-06-20
 
 ### Fixed — slow disk limit cycle (sample-and-hold pacing for the HDD/SSD servo)
