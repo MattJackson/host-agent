@@ -6,6 +6,45 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-06-21
+
+### Added — first-run box scan ("no baseline → get one, then trim")
+
+A never-before-seen box now **actively learns its own airflow once** before
+entering normal control, instead of slowly trimming up from a blind default.
+Completes the v5 lifecycle (`docs/fan-controller-v5-design.md`): *scan → learn →
+optimize → save → run*, then the v0.5.0 continuous learner maintains it.
+
+**How:** on first boot (no persisted baseline) the agent holds the chassis fan
+at fixed levels — **80 → 55 → 30%**, dwelling `SCAN_DWELL_MINUTES` (default 10)
+at each so the slow plants settle — records each class's settled temperature,
+fits the fan→temp line (`learn.FitComfort`), and **places each class's curve so
+it holds that class's TARGET** at the fan the plant actually needs. The result
+(per-class comfort + a `scanned` flag) is persisted to `state/learned.json`;
+subsequent boots skip the scan and resume.
+
+**Why high→low:** the scan starts in the coolest/safest state and steps the fan
+*down*. If any class comes within `scanApproachMargin` (3°C) of its emergency on
+the way down, the scan **records that level and stops descending** rather than
+push a hot class (e.g. a loaded passive GPU) toward a trip — so it still gets a
+valid fit from the safe, hotter data points.
+
+**Skipped** on CPU-only boxes (no slow plant worth a 30-min scan) and whenever
+the scan can't complete — in both cases the agent proceeds on profile-default
+comfort and the continuous learner trims from there.
+
+### Safety
+- The emergency trip is honored every scan cycle (full abort → fans 100% if any
+  class hits emergency); the approach-margin guard backs off before that.
+- ctx cancellation / signal aborts the scan cleanly.
+- A failed/aborted scan does not set `scanned`, so it retries next boot; it never
+  blocks normal control from starting on defaults.
+
+### Tests
+- `learn.FitComfort`: places the curve to hold target on a clean plant; falls
+  back to `target-margin` on single-level / no-cooling scans; floors comfort when
+  the target needs ~max fan; clamps to envelope; closed-loop settles at target.
+
 ## [0.5.0] — 2026-06-21
 
 ### Added — target-seeking learner (the adaptive layer, with the right objective)

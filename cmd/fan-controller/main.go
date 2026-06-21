@@ -247,8 +247,9 @@ func main() {
 
 	// v0.5.0: overlay any persisted learned curve comfort onto cfg so the agent
 	// resumes its converged operating point instead of relearning from the
-	// profile default each boot.
-	loadLearnedComfort(learnedStatePath, cfg, logger)
+	// profile default each boot. Returns whether this box has a baseline (has
+	// been scanned) — if not, we run the first-run box scan below.
+	scanned := loadBaseline(learnedStatePath, cfg, logger)
 
 	c := controller.New(cfg, ipmiClient, reader, logger, stateFile, metricsFile)
 	c.LoadState()
@@ -261,6 +262,32 @@ func main() {
 		logger.Printf("WARN: SetFan: %v", err)
 	}
 	logger.Printf("Manual control engaged at %d%%", c.CurrentSpeed)
+
+	// v0.5.0 first-run box scan: if this box has no baseline, learn its airflow
+	// once (drive fans through fixed levels, fit fan→temp, place each curve to
+	// hold TARGET) before entering normal control. The continuous learner then
+	// maintains it. Skipped on CPU-only boxes (nothing slow to learn) and when
+	// the scan can't run; either way we proceed and the learner trims from the
+	// profile default.
+	if !scanned {
+		scanDwell := 10 * time.Minute
+		if v := os.Getenv("SCAN_DWELL_MINUTES"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				scanDwell = time.Duration(n) * time.Minute
+			}
+		}
+		if reading, ok := reader.Read(ctx); !ok || !scanWorthwhile(reading) {
+			logger.Printf("box scan: skipped (no slow plant present) — using profile comfort")
+			scanned = true // nothing to scan; don't retry every boot
+		} else if runBoxScan(ctx, logger, cfg, reader, ipmiClient, scanDwell, cfg.IntervalSec) {
+			scanned = true
+		} else {
+			logger.Printf("box scan: did not complete — using profile comfort, will retry next boot")
+		}
+		if err := saveBaseline(learnedStatePath, cfg, scanned); err != nil {
+			logger.Printf("WARN: baseline persist: %v", err)
+		}
+	}
 
 	// 6. Main loop. Cycle every cfg.IntervalSec; persist + return-to-auto
 	// on signal.
@@ -316,7 +343,7 @@ func main() {
 			if time.Since(lastLearn) >= learnInterval {
 				lastLearn = time.Now()
 				if runLearnTick(cfg, obs, logger) {
-					if err := saveLearnedComfort(learnedStatePath, cfg); err != nil {
+					if err := saveBaseline(learnedStatePath, cfg, scanned); err != nil {
 						logger.Printf("WARN: learn persist: %v", err)
 					}
 				}

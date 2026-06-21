@@ -22,43 +22,47 @@ const learnedStatePath = stateDir + "/learned.json"
 // emergency.
 const learnComfortFloor = 20
 
-type learnedComfort struct {
-	CPU int `json:"cpu"`
-	GPU int `json:"gpu"`
-	HDD int `json:"hdd"`
-	SSD int `json:"ssd"`
+type baseline struct {
+	Scanned bool `json:"scanned"` // true once the first-run box scan has placed comfort
+	CPU     int  `json:"cpu"`
+	GPU     int  `json:"gpu"`
+	HDD     int  `json:"hdd"`
+	SSD     int  `json:"ssd"`
 }
 
-// loadLearnedComfort overlays any persisted learned comfort onto cfg, clamped to
-// the safe envelope. No-op on first run (file absent) — cfg keeps its profile
-// comfort. Called once at startup, before the control loop.
-func loadLearnedComfort(path string, cfg *config.Config, logger controller.Logger) {
+// loadBaseline overlays any persisted learned comfort onto cfg (clamped to the
+// safe envelope) and reports whether this box has already been scanned. No-op /
+// returns false on first run (file absent) — cfg keeps its profile comfort and
+// the caller runs the box scan.
+func loadBaseline(path string, cfg *config.Config, logger controller.Logger) (scanned bool) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return
+		return false
 	}
-	var lc learnedComfort
-	if err := json.Unmarshal(b, &lc); err != nil {
+	var bl baseline
+	if err := json.Unmarshal(b, &bl); err != nil {
 		logger.Printf("learn: ignoring unreadable %s: %v", path, err)
-		return
+		return false
 	}
 	apply := func(v int, dst *int, hi int) {
 		if v >= learnComfortFloor && v <= hi {
 			*dst = v
 		}
 	}
-	apply(lc.CPU, &cfg.CPUComfort, cfg.CPUEmergency-1)
-	apply(lc.GPU, &cfg.GPUComfort, cfg.GPUEmergency-1)
-	apply(lc.HDD, &cfg.HDDComfort, cfg.HDDEmergency-1)
-	apply(lc.SSD, &cfg.SSDComfort, cfg.SSDEmergency-1)
-	logger.Printf("learn: restored comfort cpu=%d gpu=%d hdd=%d ssd=%d (from %s)",
-		cfg.CPUComfort, cfg.GPUComfort, cfg.HDDComfort, cfg.SSDComfort, path)
+	apply(bl.CPU, &cfg.CPUComfort, cfg.CPUEmergency-1)
+	apply(bl.GPU, &cfg.GPUComfort, cfg.GPUEmergency-1)
+	apply(bl.HDD, &cfg.HDDComfort, cfg.HDDEmergency-1)
+	apply(bl.SSD, &cfg.SSDComfort, cfg.SSDEmergency-1)
+	logger.Printf("learn: restored baseline scanned=%v comfort cpu=%d gpu=%d hdd=%d ssd=%d (from %s)",
+		bl.Scanned, cfg.CPUComfort, cfg.GPUComfort, cfg.HDDComfort, cfg.SSDComfort, path)
+	return bl.Scanned
 }
 
-// saveLearnedComfort atomically persists the current learned comfort.
-func saveLearnedComfort(path string, cfg *config.Config) error {
-	b, err := json.Marshal(learnedComfort{
-		CPU: cfg.CPUComfort, GPU: cfg.GPUComfort, HDD: cfg.HDDComfort, SSD: cfg.SSDComfort,
+// saveBaseline atomically persists the current comfort + scanned flag.
+func saveBaseline(path string, cfg *config.Config, scanned bool) error {
+	b, err := json.Marshal(baseline{
+		Scanned: scanned,
+		CPU:     cfg.CPUComfort, GPU: cfg.GPUComfort, HDD: cfg.HDDComfort, SSD: cfg.SSDComfort,
 	})
 	if err != nil {
 		return err
