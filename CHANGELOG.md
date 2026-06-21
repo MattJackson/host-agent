@@ -6,6 +6,29 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.6.7] — 2026-06-21
+
+### Fixed — residual learner drift on multi-class boxes (per-class demand)
+
+Watching v0.6.6 settle on docker-1 surfaced a second face of the drift: the
+floor-guard added in 0.6.6 keyed off the **chassis** fan demand, but the observer
+fed every class the same global `CurrentSpeed`. With the Tesla P4 pinning the
+chassis at 78%, the CPU/HDD/SSD learners all saw `fanP90=78`, concluded there was
+fan to reclaim, and ratcheted their comforts up anyway — `cpu 70→74`, `hdd 38→42`,
+`ssd 55→59` over ~30 min — even though each of those curves was sitting at the 10%
+MIN_FAN floor (`c10/p78/h10/s10`). Left alone, CPU comfort would have walked back
+to its ~80 ceiling and re-armed the original failure.
+
+The controller now records **per-class curve demand** (`LastCPUDemand` etc.) and
+the observer samples *that* instead of the max-wins chassis speed. So the reclaim
+guard sees each class's own demand: a class whose curve is at MIN_FAN has nothing
+to reclaim and holds, regardless of what another class is doing to the chassis.
+This is the structural completion of the floor-guard — heat is heat, but each
+class now reclaims fan only against its *own* contribution.
+
+Learn-state epoch bumped to 3, so rolling this image re-discards the comforts that
+drifted under 0.6.6 and relearns clean.
+
 ## [0.6.6] — 2026-06-21
 
 ### Fixed — learner drift-up that pinned fans low on a hot box (docker-1 thermal event)

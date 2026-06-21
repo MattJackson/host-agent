@@ -34,14 +34,14 @@ import (
 var version = "dev"
 
 const (
-	profileDir          = "/etc/fan-controller/profiles"
-	stateDir            = "/var/lib/host-agent/state"
+	profileDir = "/etc/fan-controller/profiles"
+	stateDir   = "/var/lib/host-agent/state"
 	// safeStartFan is the minimum fan % the controller will engage manual mode
 	// at on startup, regardless of the resumed last_speed. Taking the BMC into
 	// manual disables iDRAC's auto ramp, so starting low on a freshly-booted
 	// (possibly hot) box is unsafe; cycle 1 trims down from here within one
 	// interval. Loud-but-safe beats quiet-but-cooking.
-	safeStartFan = 50
+	safeStartFan        = 50
 	stateFile           = "/var/lib/host-agent/state/base"
 	metricsFile         = "/var/lib/host-agent/state/metrics.prom"
 	adaptiveMetricsFile = "/var/lib/host-agent/state/adaptive.prom"
@@ -478,21 +478,26 @@ func buildObserver(logger controller.Logger, cfg *config.Config) *adaptive.Obser
 // observer's discard logic doesn't have to handle the sentinel.
 func sampleObserver(obs *adaptive.Observer, c *controller.Controller) {
 	now := time.Now()
-	push := func(class envelope.Class, temp int) {
+	push := func(class envelope.Class, temp, demand int) {
 		if temp < 0 {
 			return
 		}
 		obs.Add(class, adaptive.Sample{
-			Timestamp:    now,
-			TempCelsius:  float64(temp),
-			FanDemandPct: c.CurrentSpeed,
+			Timestamp:   now,
+			TempCelsius: float64(temp),
+			// Per-class CURVE demand, NOT the max-wins chassis speed. The learner's
+			// reclaim guard keys off this: a class whose own curve sits at MIN_FAN
+			// has no fan to reclaim even when another class pins the chassis high.
+			// Feeding the chassis value here was the residual drift that walked
+			// docker-1's CPU/HDD/SSD comfort up while the GPU held the fan at 78%.
+			FanDemandPct: demand,
 			InletCelsius: 0, // TODO: plumb real inlet from sensors.Reading
 		})
 	}
-	push(envelope.CPU, c.LastCPUTemp)
-	push(envelope.PassiveGPU, c.LastPGTemp)
-	push(envelope.HDD, c.LastHDDTemp)
-	push(envelope.SSD, c.LastSSDTemp)
+	push(envelope.CPU, c.LastCPUTemp, c.LastCPUDemand)
+	push(envelope.PassiveGPU, c.LastPGTemp, c.LastPGDemand)
+	push(envelope.HDD, c.LastHDDTemp, c.LastHDDDemand)
+	push(envelope.SSD, c.LastSSDTemp, c.LastSSDDemand)
 }
 
 // compositeReader aggregates CPU + GPU + smartctl into a single Reading.

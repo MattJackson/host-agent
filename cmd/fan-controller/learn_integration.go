@@ -34,7 +34,11 @@ const learnComfortFloor = 20
 // epoch 2 (v0.6.6): floor-guarded reclaim. Pre-epoch (epoch 0/absent) comforts
 // were ratcheted up by the unguarded reclaim branch (docker-1 CPU→79) and MUST
 // be discarded.
-const learnEpoch = 2
+// epoch 3 (v0.6.7): per-class demand fed to the reclaim guard. epoch-2 comforts
+// kept drifting on multi-class boxes — a class freeloaded another class's high
+// chassis fan and ratcheted up anyway (docker-1 CPU 70→74 while the GPU held
+// 78%). Those comforts are drifted and must be discarded.
+const learnEpoch = 3
 
 type baseline struct {
 	Epoch   int  `json:"epoch"`   // learnEpoch at save time; mismatch ⇒ discard + relearn

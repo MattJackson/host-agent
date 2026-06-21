@@ -64,6 +64,17 @@ type Controller struct {
 	LastHDDTemp int
 	LastSSDTemp int
 
+	// Per-class CURVE demand (% fan THIS class's curve asked for this cycle),
+	// distinct from CurrentSpeed (the max-wins chassis fan). The learner's
+	// reclaim guard must key off the class's OWN demand, not the chassis: when
+	// one class (e.g. a hot GPU) pins the chassis high, the other classes' curves
+	// are still at MIN_FAN and have no fan to reclaim — feeding them the chassis
+	// value made their comfort ratchet up anyway (the residual docker-1 drift).
+	LastCPUDemand int
+	LastPGDemand  int
+	LastHDDDemand int
+	LastSSDDemand int
+
 	// Persist cadence.
 	PersistInterval time.Duration
 	LastPersist     time.Time
@@ -278,15 +289,19 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 	// cpu.Read() returns ok=false on a zero max, so this is defensive.
 	if reading.CPUMax > 0 {
 		c.LastCPUTemp = reading.CPUMax
+		c.LastCPUDemand = cpuCurve
 	}
 	if reading.PassiveGPUMax > 0 {
 		c.LastPGTemp = reading.PassiveGPUMax
+		c.LastPGDemand = pgCurve
 	}
 	if reading.HDDMax > 0 {
 		c.LastHDDTemp = reading.HDDMax
+		c.LastHDDDemand = hddCurve
 	}
 	if reading.SSDMax > 0 {
 		c.LastSSDTemp = reading.SSDMax
+		c.LastSSDDemand = ssdCurve
 	}
 
 	// Persist + metrics.
