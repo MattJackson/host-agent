@@ -6,6 +6,28 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.3.15] — 2026-06-20
+
+### Fixed — slow disk limit cycle (sample-and-hold pacing for the HDD/SSD servo)
+
+**Symptom**: after v0.3.14 the HDD setpoint stopped sawtoothing fast but settled into a *slow* limit cycle instead — on `unraid-1`, drive temp swinging ~33↔45°C and fan ~10↔80% over a ~35-40 min period, never parking flat at the 40°C target.
+
+**Root cause (measured live)**: a spinning disk has **~4.5 minutes of thermal dead time** — when the fan ramped 28→81%, the drive temperature didn't move *at all* for ~4.5 min. The controller steps the fan every main cycle (15-30s), i.e. ~20× faster than the plant responds, so the ramp winds the fan far past the equilibrium speed before the drive reacts (windup). It then overshoots (drive crashes 46→33), slams the fan to MinFan, and the drive slowly rewarms back through the whole deadband at 10% fan — entering the band at a fan speed too low to hold it, so it climbs out the top and the cycle repeats. Neither the old coast-to-MinFan nor v0.3.14's HOLD could fix this, because both can enter the deadband at the *wrong* fan speed; the overshoot feeding them that wrong speed was the real bug.
+
+**Fix**: **sample-and-hold pacing** for the slow disk plants. Outside the deadband (the gentle servo ramp), the HDD/SSD PID now takes at most one step per `HDD_STEP_INTERVAL` / `SSD_STEP_INTERVAL` seconds (default **240 ≈ the measured dead time**) and holds the stepped value in between — so each step's effect registers before the next, and the fan converges to the equilibrium speed (~33% to hold 40°C on `unraid-1`) without ever overshooting. Inside the deadband it holds the current speed exactly as before (instant). **Safety is untouched**: the emergency trip short-circuits before the PID runs, and the per-class proximity floor is computed and `max()`'d in separately and is *never* paced — so approach-to-emergency response stays instant.
+
+New per-class config (both default 240s, `0` → built-in default): `HDD_STEP_INTERVAL`, `SSD_STEP_INTERVAL`. CPU/GPU are unpaced — their plants respond in seconds, not minutes.
+
+### Tests
+
+- `internal/controller/controller_test.go::TestPacedStep_RampPacedAcrossDeadTime` — a held-hot drive takes one step then holds it across the whole dead-time window, then steps again only after the interval (the anti-windup regression).
+- `TestPacedStep_InBandHoldsInstantly` — inside the deadband the paced step holds current speed every cycle (no pacing gate).
+- `TestPacedStep_AbstainsOnNoReading` — temp≤0 abstains and clears the held candidate.
+
+### Migration
+
+Drop-in upgrade. Disk fans now ease to their holding speed over ~10-20 min on first convergence (one-time), then sit flat at target instead of cycling. Tune per host with `HDD_STEP_INTERVAL` (longer = gentler/slower, shorter = faster but risks overshoot on slow drives). A future one-time per-server auto-tune mode will measure each box's dead time and set this automatically.
+
 ## [0.3.14] — 2026-06-20
 
 ### Changed — target-drift is now OFF by default (the controller is a plain thermostat)

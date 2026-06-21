@@ -64,6 +64,18 @@ type Controller struct {
 	LastHDDTemp int
 	LastSSDTemp int
 
+	// Sample-and-hold pacing for the slow disk plants (HDD/SSD). A spinning
+	// disk has ~minutes of thermal dead time, so stepping the fan every cycle
+	// (15-30s) winds the ramp up far past equilibrium before the temperature
+	// responds — overshoot, overcool, and a slow limit cycle. We instead take
+	// one gentle ramp step, then hold it until ~one dead-time has passed so we
+	// can see the plant react before stepping again. Only the gentle servo
+	// ramp is paced; the emergency trip and proximity floors stay instant.
+	lastHDDStep time.Time
+	lastSSDStep time.Time
+	heldHDDCand int
+	heldSSDCand int
+
 	// Persist cadence.
 	PersistInterval time.Duration
 	LastPersist     time.Time
@@ -242,20 +254,20 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 		FanGain: cfg.FanGain, DerivativeGain: cfg.DerivativeGain,
 		DeadbandDriftRate: cfg.DeadbandDriftRate,
 	})
-	hddCand := control.StepPID(control.PIDParams{
+	hddCand := c.pacedStep(control.PIDParams{
 		Temp: reading.HDDMax, Target: cfg.HDDTarget, Deadband: cfg.HDDDeadband,
 		LastTemp: c.LastHDDTemp, CurrentSpeed: c.CurrentSpeed,
 		MinFan: cfg.MinFan, MaxFan: cfg.MaxFan,
 		FanGain: cfg.FanGain, DerivativeGain: cfg.DerivativeGain,
 		DeadbandDriftRate: cfg.DeadbandDriftRate,
-	})
-	ssdCand := control.StepPID(control.PIDParams{
+	}, cfg.HDDStepInterval, &c.lastHDDStep, &c.heldHDDCand)
+	ssdCand := c.pacedStep(control.PIDParams{
 		Temp: reading.SSDMax, Target: cfg.SSDTarget, Deadband: cfg.SSDDeadband,
 		LastTemp: c.LastSSDTemp, CurrentSpeed: c.CurrentSpeed,
 		MinFan: cfg.MinFan, MaxFan: cfg.MaxFan,
 		FanGain: cfg.FanGain, DerivativeGain: cfg.DerivativeGain,
 		DeadbandDriftRate: cfg.DeadbandDriftRate,
-	})
+	}, cfg.SSDStepInterval, &c.lastSSDStep, &c.heldSSDCand)
 
 	// Per-class proximity floors. Each gates on temp > 0.
 	floors := c.proximityFloors(reading)
@@ -372,6 +384,60 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 	}
 	_ = metrics.WriteAtomic(c.MetricsPath, snap)
 	return snap
+}
+
+// defaultStepIntervalSec is the sample-and-hold pacing applied to the slow
+// disk plants when no per-class HDD_STEP_INTERVAL/SSD_STEP_INTERVAL is set.
+// ~4 min ≈ the measured thermal dead time of a spinning disk, so the servo
+// takes one step and waits roughly that long to see the response before the
+// next — enough to stop the ramp out-running the plant and overshooting.
+const defaultStepIntervalSec = 240
+
+// pacedStep is StepPID with sample-and-hold pacing for a slow-plant class
+// (HDD/SSD). Inside the deadband it holds the current speed exactly like
+// StepPID (instant). OUTSIDE the band — the gentle servo ramp — it takes at
+// most one step per intervalSec and holds the last stepped candidate in
+// between, so the fan doesn't wind up past equilibrium during the disk's
+// minutes-long thermal dead time. last/held are per-class persistent state.
+//
+// Safety is unaffected: the emergency trip short-circuits Cycle() before this
+// runs, and the proximity floor is computed and max()'d in separately and is
+// never paced — so approach-to-emergency response stays instant.
+func (c *Controller) pacedStep(p control.PIDParams, intervalSec int, last *time.Time, held *int) int {
+	if p.Temp <= 0 {
+		// Abstain (no reading); reset held so a stale value can't bind max().
+		*held = 0
+		return 0
+	}
+	if intervalSec <= 0 {
+		intervalSec = defaultStepIntervalSec
+	}
+	// Inside the deadband: hold current speed (identical to StepPID's band
+	// branch). Do NOT touch the pace clock — keeping it running means edge
+	// jitter across the band boundary can't trigger an unpaced step.
+	if abs(p.Temp-p.Target) <= p.Deadband {
+		cand := clampInt(p.CurrentSpeed, p.MinFan, p.MaxFan)
+		*held = cand
+		return cand
+	}
+	// Outside the band: pace the ramp. While we're still within intervalSec of
+	// the last step, hold — give the plant time to react before stepping again.
+	now := c.Now()
+	if !last.IsZero() && now.Sub(*last) < time.Duration(intervalSec)*time.Second {
+		return clampInt(*held, p.MinFan, p.MaxFan)
+	}
+	cand := control.StepPID(p)
+	*held = cand
+	*last = now
+	return cand
+}
+
+// abs is the int absolute value used by pacedStep's deadband check.
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 // proximityFloors computes the 5 per-class proximity floors in canonical

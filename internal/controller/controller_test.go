@@ -9,11 +9,93 @@ import (
 	"time"
 
 	"github.com/pq/docker-server/host-agent/internal/config"
+	"github.com/pq/docker-server/host-agent/internal/control"
 	"github.com/pq/docker-server/host-agent/internal/ipmi"
 	"github.com/pq/docker-server/host-agent/internal/runner"
 	"github.com/pq/docker-server/host-agent/internal/sensors"
 	"github.com/pq/docker-server/host-agent/internal/state"
 )
+
+// hddPID builds an out-of-band HDD PIDParams (temp well above target) for the
+// pacing tests, reading gains from the loaded default profile.
+func hddPID(cfg *config.Config, temp, current int) control.PIDParams {
+	return control.PIDParams{
+		Temp: temp, Target: cfg.HDDTarget, Deadband: cfg.HDDDeadband,
+		LastTemp: temp, CurrentSpeed: current,
+		MinFan: cfg.MinFan, MaxFan: cfg.MaxFan,
+		FanGain: cfg.FanGain, DerivativeGain: cfg.DerivativeGain,
+		DeadbandDriftRate: cfg.DeadbandDriftRate,
+	}
+}
+
+// TestPacedStep_RampPacedAcrossDeadTime is the anti-windup regression: with a
+// drive held hot (out of band), the servo must take ONE step and then hold it
+// across repeated cycles until the pace interval elapses — not wind the fan up
+// every cycle the way the unpaced controller did (10→80% in 4 min).
+func TestPacedStep_RampPacedAcrossDeadTime(t *testing.T) {
+	cfg := defaultCfg(t)
+	c := newTestController(t, cfg, &stubReader{readings: []sensors.Reading{{HDDMax: 46}}, oks: []bool{true}})
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	c.Now = func() time.Time { return now }
+	c.CurrentSpeed = 20
+
+	// First call (clock zero) → steps. error +6, step = round(6*0.5)=3 → 23.
+	first := c.pacedStep(hddPID(cfg, 46, c.CurrentSpeed), 240, &c.lastHDDStep, &c.heldHDDCand)
+	if first != 23 {
+		t.Fatalf("first paced step: got %d want 23", first)
+	}
+	c.CurrentSpeed = first // simulate max-wins adopting the candidate
+
+	// Many cycles within the interval: must HOLD `first`, never ramp further —
+	// this is the dead-time the unpaced controller wound up across.
+	for i := 1; i <= 8; i++ {
+		now = now.Add(30 * time.Second) // 30s..240s, all < 240 except the last edge
+		if now.Sub(c.lastHDDStep) >= 240*time.Second {
+			break
+		}
+		got := c.pacedStep(hddPID(cfg, 46, c.CurrentSpeed), 240, &c.lastHDDStep, &c.heldHDDCand)
+		if got != first {
+			t.Fatalf("cycle %d within interval: got %d, must hold %d (windup!)", i, got, first)
+		}
+	}
+
+	// Past the interval → one more step is allowed.
+	now = c.lastHDDStep.Add(241 * time.Second)
+	second := c.pacedStep(hddPID(cfg, 46, c.CurrentSpeed), 240, &c.lastHDDStep, &c.heldHDDCand)
+	if second <= first {
+		t.Fatalf("after interval: got %d, want a further ramp step above %d", second, first)
+	}
+}
+
+// TestPacedStep_InBandHoldsInstantly: inside the deadband the paced step holds
+// the current speed every cycle (no pacing gate, identical to StepPID).
+func TestPacedStep_InBandHoldsInstantly(t *testing.T) {
+	cfg := defaultCfg(t)
+	c := newTestController(t, cfg, &stubReader{readings: []sensors.Reading{{HDDMax: 40}}, oks: []bool{true}})
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	c.Now = func() time.Time { return now }
+	c.CurrentSpeed = 33
+	// temp == target (in band) on consecutive cycles → always holds 33.
+	for i := 0; i < 3; i++ {
+		now = now.Add(15 * time.Second)
+		got := c.pacedStep(hddPID(cfg, 40, 33), 240, &c.lastHDDStep, &c.heldHDDCand)
+		if got != 33 {
+			t.Fatalf("in-band cycle %d: got %d want 33 (hold)", i, got)
+		}
+	}
+}
+
+// TestPacedStep_AbstainsOnNoReading: temp<=0 abstains and clears held so a
+// stale candidate can't bind max-wins.
+func TestPacedStep_AbstainsOnNoReading(t *testing.T) {
+	cfg := defaultCfg(t)
+	c := newTestController(t, cfg, &stubReader{readings: []sensors.Reading{{}}, oks: []bool{true}})
+	c.heldHDDCand = 55
+	got := c.pacedStep(hddPID(cfg, 0, 30), 240, &c.lastHDDStep, &c.heldHDDCand)
+	if got != 0 || c.heldHDDCand != 0 {
+		t.Fatalf("abstain: got %d held %d, want 0/0", got, c.heldHDDCand)
+	}
+}
 
 // stubReader returns a fixed Reading.
 type stubReader struct {

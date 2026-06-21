@@ -49,6 +49,7 @@ type Config struct {
 	HDDEmergency      int
 	HDDApproachWindow int
 	HDDReadInterval   int // seconds between smartctl polls
+	HDDStepInterval   int // seconds between PID ramp steps (sample-and-hold for the slow disk plant; 0 → default)
 
 	// SSD class — full PID (split off HDDs because their thermal envelope
 	// is 10-15°C wider).
@@ -56,6 +57,7 @@ type Config struct {
 	SSDDeadband       int
 	SSDEmergency      int
 	SSDApproachWindow int
+	SSDStepInterval   int // seconds between PID ramp steps (sample-and-hold for the slow disk plant; 0 → default)
 
 	// Fan system.
 	MinFan            int
@@ -169,8 +171,8 @@ func Load(profileDir, model string, lookupEnv func(string) (string, bool), logge
 		"CPU_TARGET", "CPU_DEADBAND", "CPU_EMERGENCY", "CPU_APPROACH_WINDOW",
 		"GPU_TARGET", "GPU_DEADBAND", "GPU_EMERGENCY", "GPU_APPROACH_WINDOW",
 		"ACTIVE_GPU_OWN_FAN_THRESHOLD", "ACTIVE_GPU_EMERGENCY",
-		"HDD_TARGET", "HDD_DEADBAND", "HDD_EMERGENCY", "HDD_APPROACH_WINDOW", "HDD_READ_INTERVAL",
-		"SSD_TARGET", "SSD_DEADBAND", "SSD_EMERGENCY", "SSD_APPROACH_WINDOW",
+		"HDD_TARGET", "HDD_DEADBAND", "HDD_EMERGENCY", "HDD_APPROACH_WINDOW", "HDD_READ_INTERVAL", "HDD_STEP_INTERVAL",
+		"SSD_TARGET", "SSD_DEADBAND", "SSD_EMERGENCY", "SSD_APPROACH_WINDOW", "SSD_STEP_INTERVAL",
 	} {
 		envOverlay(k)
 	}
@@ -200,11 +202,13 @@ func Load(profileDir, model string, lookupEnv func(string) (string, bool), logge
 	b.Int("HDD_EMERGENCY", &cfg.HDDEmergency)
 	b.Int("HDD_APPROACH_WINDOW", &cfg.HDDApproachWindow)
 	b.Int("HDD_READ_INTERVAL", &cfg.HDDReadInterval)
+	b.Int("HDD_STEP_INTERVAL", &cfg.HDDStepInterval)
 
 	b.Int("SSD_TARGET", &cfg.SSDTarget)
 	b.Int("SSD_DEADBAND", &cfg.SSDDeadband)
 	b.Int("SSD_EMERGENCY", &cfg.SSDEmergency)
 	b.Int("SSD_APPROACH_WINDOW", &cfg.SSDApproachWindow)
+	b.Int("SSD_STEP_INTERVAL", &cfg.SSDStepInterval)
 
 	b.Int("MIN_FAN", &cfg.MinFan)
 	b.Int("MAX_FAN", &cfg.MaxFan)
