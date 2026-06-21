@@ -134,6 +134,24 @@ func StepPID(p PIDParams) int {
 	return clamp(cand, p.MinFan, p.MaxFan)
 }
 
+// Curve is the v3 unified control law: a single memoryless, proportional
+// temperature→fan mapping used identically for every thermal class. Fan rises
+// linearly from minFan at the class's comfort temperature to maxFan at its
+// emergency temperature; below comfort it's minFan, at/above emergency it's
+// maxFan. temp <= 0 abstains (returns 0) so an absent sensor can't bind max().
+//
+// Because it's a pure function of the current temperature — no integrator, no
+// setpoint, no history — it cannot wind up or hunt regardless of how slow the
+// plant is (see docs/fan-controller-v3-design.md). It is implemented on top of
+// ProximityFloor with the ramp window spanning the whole comfort→emergency
+// range, i.e. window = emergency - comfort.
+func Curve(temp, comfort, emergency, minFan, maxFan int) int {
+	if temp <= 0 {
+		return 0
+	}
+	return ProximityFloor(temp, emergency, emergency-comfort, minFan, maxFan)
+}
+
 // ProximityFloor computes the per-class proximity-to-emergency floor.
 // Returns minFan when temp is at or below (emergency - window); ramps
 // linearly to maxFan as temp climbs to emergency; clamps to maxFan if

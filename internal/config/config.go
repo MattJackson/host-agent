@@ -43,13 +43,22 @@ type Config struct {
 	ActiveGPUOwnFanThreshold int // %. Chassis assist kicks in at/above this own-fan %.
 	ActiveGPUEmergency       int // °C. Hard safety: any active GPU at/above this → fans 100%.
 
+	// v3 unified control: per-class comfort temperature — the curve's ramp
+	// start (fan = MinFan at/below comfort, rising linearly to MaxFan at
+	// emergency). This is the only per-class control knob in v3; the
+	// Target/Deadband/gain fields below are retained for back-compat and the
+	// legacy PID path but are not used by the v3 Curve controller.
+	CPUComfort int
+	GPUComfort int
+	HDDComfort int
+	SSDComfort int
+
 	// HDD class — full PID.
 	HDDTarget         int
 	HDDDeadband       int
 	HDDEmergency      int
 	HDDApproachWindow int
 	HDDReadInterval   int // seconds between smartctl polls
-	HDDStepInterval   int // seconds between PID ramp steps (sample-and-hold for the slow disk plant; 0 → default)
 
 	// SSD class — full PID (split off HDDs because their thermal envelope
 	// is 10-15°C wider).
@@ -57,7 +66,6 @@ type Config struct {
 	SSDDeadband       int
 	SSDEmergency      int
 	SSDApproachWindow int
-	SSDStepInterval   int // seconds between PID ramp steps (sample-and-hold for the slow disk plant; 0 → default)
 
 	// Fan system.
 	MinFan            int
@@ -171,8 +179,9 @@ func Load(profileDir, model string, lookupEnv func(string) (string, bool), logge
 		"CPU_TARGET", "CPU_DEADBAND", "CPU_EMERGENCY", "CPU_APPROACH_WINDOW",
 		"GPU_TARGET", "GPU_DEADBAND", "GPU_EMERGENCY", "GPU_APPROACH_WINDOW",
 		"ACTIVE_GPU_OWN_FAN_THRESHOLD", "ACTIVE_GPU_EMERGENCY",
-		"HDD_TARGET", "HDD_DEADBAND", "HDD_EMERGENCY", "HDD_APPROACH_WINDOW", "HDD_READ_INTERVAL", "HDD_STEP_INTERVAL",
-		"SSD_TARGET", "SSD_DEADBAND", "SSD_EMERGENCY", "SSD_APPROACH_WINDOW", "SSD_STEP_INTERVAL",
+		"HDD_TARGET", "HDD_DEADBAND", "HDD_EMERGENCY", "HDD_APPROACH_WINDOW", "HDD_READ_INTERVAL",
+		"SSD_TARGET", "SSD_DEADBAND", "SSD_EMERGENCY", "SSD_APPROACH_WINDOW",
+		"CPU_COMFORT", "GPU_COMFORT", "HDD_COMFORT", "SSD_COMFORT",
 	} {
 		envOverlay(k)
 	}
@@ -202,13 +211,16 @@ func Load(profileDir, model string, lookupEnv func(string) (string, bool), logge
 	b.Int("HDD_EMERGENCY", &cfg.HDDEmergency)
 	b.Int("HDD_APPROACH_WINDOW", &cfg.HDDApproachWindow)
 	b.Int("HDD_READ_INTERVAL", &cfg.HDDReadInterval)
-	b.Int("HDD_STEP_INTERVAL", &cfg.HDDStepInterval)
 
 	b.Int("SSD_TARGET", &cfg.SSDTarget)
 	b.Int("SSD_DEADBAND", &cfg.SSDDeadband)
 	b.Int("SSD_EMERGENCY", &cfg.SSDEmergency)
 	b.Int("SSD_APPROACH_WINDOW", &cfg.SSDApproachWindow)
-	b.Int("SSD_STEP_INTERVAL", &cfg.SSDStepInterval)
+
+	b.Int("CPU_COMFORT", &cfg.CPUComfort)
+	b.Int("GPU_COMFORT", &cfg.GPUComfort)
+	b.Int("HDD_COMFORT", &cfg.HDDComfort)
+	b.Int("SSD_COMFORT", &cfg.SSDComfort)
 
 	b.Int("MIN_FAN", &cfg.MinFan)
 	b.Int("MAX_FAN", &cfg.MaxFan)
@@ -238,6 +250,22 @@ func Load(profileDir, model string, lookupEnv func(string) (string, bool), logge
 	}
 	if cfg.HDDAware == "" {
 		cfg.HDDAware = "auto"
+	}
+
+	// v3 comfort fallback: if a profile predates *_COMFORT, derive it from the
+	// legacy per-class target so the Curve controller has a sane ramp start
+	// even on un-migrated configs. (default.env sets explicit comfort values.)
+	if cfg.CPUComfort == 0 {
+		cfg.CPUComfort = cfg.CPUTarget
+	}
+	if cfg.GPUComfort == 0 {
+		cfg.GPUComfort = cfg.GPUTarget
+	}
+	if cfg.HDDComfort == 0 {
+		cfg.HDDComfort = cfg.HDDTarget
+	}
+	if cfg.SSDComfort == 0 {
+		cfg.SSDComfort = cfg.SSDTarget
 	}
 
 	return cfg, nil

@@ -9,93 +9,11 @@ import (
 	"time"
 
 	"github.com/pq/docker-server/host-agent/internal/config"
-	"github.com/pq/docker-server/host-agent/internal/control"
 	"github.com/pq/docker-server/host-agent/internal/ipmi"
 	"github.com/pq/docker-server/host-agent/internal/runner"
 	"github.com/pq/docker-server/host-agent/internal/sensors"
 	"github.com/pq/docker-server/host-agent/internal/state"
 )
-
-// hddPID builds an out-of-band HDD PIDParams (temp well above target) for the
-// pacing tests, reading gains from the loaded default profile.
-func hddPID(cfg *config.Config, temp, current int) control.PIDParams {
-	return control.PIDParams{
-		Temp: temp, Target: cfg.HDDTarget, Deadband: cfg.HDDDeadband,
-		LastTemp: temp, CurrentSpeed: current,
-		MinFan: cfg.MinFan, MaxFan: cfg.MaxFan,
-		FanGain: cfg.FanGain, DerivativeGain: cfg.DerivativeGain,
-		DeadbandDriftRate: cfg.DeadbandDriftRate,
-	}
-}
-
-// TestPacedStep_RampPacedAcrossDeadTime is the anti-windup regression: with a
-// drive held hot (out of band), the servo must take ONE step and then hold it
-// across repeated cycles until the pace interval elapses — not wind the fan up
-// every cycle the way the unpaced controller did (10→80% in 4 min).
-func TestPacedStep_RampPacedAcrossDeadTime(t *testing.T) {
-	cfg := defaultCfg(t)
-	c := newTestController(t, cfg, &stubReader{readings: []sensors.Reading{{HDDMax: 46}}, oks: []bool{true}})
-	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
-	c.Now = func() time.Time { return now }
-	c.CurrentSpeed = 20
-
-	// First call (clock zero) → steps. error +6, step = round(6*0.5)=3 → 23.
-	first := c.pacedStep(hddPID(cfg, 46, c.CurrentSpeed), 240, &c.lastHDDStep, &c.heldHDDCand)
-	if first != 23 {
-		t.Fatalf("first paced step: got %d want 23", first)
-	}
-	c.CurrentSpeed = first // simulate max-wins adopting the candidate
-
-	// Many cycles within the interval: must HOLD `first`, never ramp further —
-	// this is the dead-time the unpaced controller wound up across.
-	for i := 1; i <= 8; i++ {
-		now = now.Add(30 * time.Second) // 30s..240s, all < 240 except the last edge
-		if now.Sub(c.lastHDDStep) >= 240*time.Second {
-			break
-		}
-		got := c.pacedStep(hddPID(cfg, 46, c.CurrentSpeed), 240, &c.lastHDDStep, &c.heldHDDCand)
-		if got != first {
-			t.Fatalf("cycle %d within interval: got %d, must hold %d (windup!)", i, got, first)
-		}
-	}
-
-	// Past the interval → one more step is allowed.
-	now = c.lastHDDStep.Add(241 * time.Second)
-	second := c.pacedStep(hddPID(cfg, 46, c.CurrentSpeed), 240, &c.lastHDDStep, &c.heldHDDCand)
-	if second <= first {
-		t.Fatalf("after interval: got %d, want a further ramp step above %d", second, first)
-	}
-}
-
-// TestPacedStep_InBandHoldsInstantly: inside the deadband the paced step holds
-// the current speed every cycle (no pacing gate, identical to StepPID).
-func TestPacedStep_InBandHoldsInstantly(t *testing.T) {
-	cfg := defaultCfg(t)
-	c := newTestController(t, cfg, &stubReader{readings: []sensors.Reading{{HDDMax: 40}}, oks: []bool{true}})
-	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
-	c.Now = func() time.Time { return now }
-	c.CurrentSpeed = 33
-	// temp == target (in band) on consecutive cycles → always holds 33.
-	for i := 0; i < 3; i++ {
-		now = now.Add(15 * time.Second)
-		got := c.pacedStep(hddPID(cfg, 40, 33), 240, &c.lastHDDStep, &c.heldHDDCand)
-		if got != 33 {
-			t.Fatalf("in-band cycle %d: got %d want 33 (hold)", i, got)
-		}
-	}
-}
-
-// TestPacedStep_AbstainsOnNoReading: temp<=0 abstains and clears held so a
-// stale candidate can't bind max-wins.
-func TestPacedStep_AbstainsOnNoReading(t *testing.T) {
-	cfg := defaultCfg(t)
-	c := newTestController(t, cfg, &stubReader{readings: []sensors.Reading{{}}, oks: []bool{true}})
-	c.heldHDDCand = 55
-	got := c.pacedStep(hddPID(cfg, 0, 30), 240, &c.lastHDDStep, &c.heldHDDCand)
-	if got != 0 || c.heldHDDCand != 0 {
-		t.Fatalf("abstain: got %d held %d, want 0/0", got, c.heldHDDCand)
-	}
-}
 
 // stubReader returns a fixed Reading.
 type stubReader struct {
@@ -276,11 +194,11 @@ func TestCycle_TempReadFailFanFullForSafety(t *testing.T) {
 	}
 }
 
-func TestCycle_PassiveGPU_DrivesPID(t *testing.T) {
+func TestCycle_PassiveGPU_DrivesCurve(t *testing.T) {
 	cfg := defaultCfg(t)
-	// P4 at 88°C — well above target 83 (window=7, emergency=90, so
-	// proximity floor active). PID +5 above target → step = 5*0.5+0*1=2.5→3.
-	// PF at 88: diff = 88 - (90-7) = 5, f = 20 + (5/7)*80 = 77.14 → 77.
+	// P4 at 88°C. v3 curve: comfort 75, emergency 90 → window 15.
+	// Curve(88) = ProximityFloor(88,90,15): diff = 88-(90-15) = 13,
+	// f = 20 + (13/15)*80 = 89.3 → 89. The GPU class binds.
 	reader := &stubReader{
 		readings: []sensors.Reading{{
 			PassiveGPUMax: 88,
@@ -293,17 +211,17 @@ func TestCycle_PassiveGPU_DrivesPID(t *testing.T) {
 	c.BaseSpeed = float64(cfg.MinFan)
 
 	snap := c.Cycle(context.Background())
-	if snap.PGCand != 23 { // 20 + 3
-		t.Errorf("pg_cand: got %d want 23", snap.PGCand)
+	if snap.PGCand != 89 {
+		t.Errorf("pg curve: got %d want 89", snap.PGCand)
 	}
-	if snap.PGPF != 77 {
-		t.Errorf("pg_pf: got %d want 77", snap.PGPF)
+	if snap.PGPF != 0 {
+		t.Errorf("pg_pf retired in v3, should be 0, got %d", snap.PGPF)
 	}
-	if snap.CurrentSpeed != 77 {
-		t.Errorf("setpoint should be pg_pf=77, got %d", snap.CurrentSpeed)
+	if snap.CurrentSpeed != 89 {
+		t.Errorf("setpoint should be the GPU curve=89, got %d", snap.CurrentSpeed)
 	}
-	if snap.Source != "pg_pf" {
-		t.Errorf("source: got %q want pg_pf", snap.Source)
+	if snap.Source != "pg" {
+		t.Errorf("source: got %q want pg", snap.Source)
 	}
 }
 
@@ -400,21 +318,19 @@ func TestCycle_ExitEmergencyHoldsAboveBaseline(t *testing.T) {
 	}
 }
 
-// TestCycle_PostEmergency_DTermSettles covers the D-term staleness path
-// (controller L4): during emergency the cycle returns early and never
-// updates LastCPUTemp, so the first post-emergency cycle computes its
-// D-term against the pre-emergency temp. This asserts the controller does
-// not get stuck producing an upward D-spike — once a real post-emergency
-// reading is recorded, a flat temp on the next cycle yields no further
-// upward push (speed settles, does not climb).
-func TestCycle_PostEmergency_DTermSettles(t *testing.T) {
+// TestCycle_PostEmergency_CurveResumesCleanly verifies the v3 memoryless
+// property across an emergency: because the curve is a pure function of the
+// current temperature, the first cycle after an emergency lands directly on
+// the correct setpoint (no D-term spike, no carried-over state), and a
+// subsequent identical reading yields an *identical* setpoint (perfect settle).
+func TestCycle_PostEmergency_CurveResumesCleanly(t *testing.T) {
 	cfg := defaultCfg(t)
 	reader := &stubReader{
 		readings: []sensors.Reading{
-			{CPUMax: 68}, // cycle 1: normal, sets LastCPUTemp=68
-			{CPUMax: 85}, // cycle 2: emergency, early-return, LastCPUTemp stays 68
-			{CPUMax: 72}, // cycle 3: exit; D-term = 72-68 (stale, +4)
-			{CPUMax: 72}, // cycle 4: flat; D-term = 72-72 = 0
+			{CPUMax: 68}, // cycle 1: normal
+			{CPUMax: 85}, // cycle 2: emergency (>= 80)
+			{CPUMax: 72}, // cycle 3: exit — curve(72) governs immediately
+			{CPUMax: 72}, // cycle 4: identical temp → identical setpoint
 		},
 		oks: []bool{true, true, true, true},
 	}
@@ -427,21 +343,19 @@ func TestCycle_PostEmergency_DTermSettles(t *testing.T) {
 	if !c.InEmergency {
 		t.Fatal("cycle 2 should be emergency")
 	}
-	snap3 := c.Cycle(context.Background()) // exit (stale +D)
+	snap3 := c.Cycle(context.Background()) // exit
 	if c.InEmergency {
 		t.Fatal("cycle 3 should have cleared emergency")
 	}
 	snap4 := c.Cycle(context.Background()) // flat temp
 
-	// The stale +4°C D-term on the exit cycle must NOT spike the fan toward
-	// MaxFan — a moderate, low setpoint is expected (CPU 72 is below target).
-	if snap3.CurrentSpeed > 60 {
-		t.Errorf("post-emergency exit spiked fan to %d (stale D-term blew up; want a moderate setpoint)", snap3.CurrentSpeed)
+	// CPU 72 with comfort 60 / emergency 80 → curve = 20 + (12/20)*80 = 68.
+	if snap3.CurrentSpeed != 68 {
+		t.Errorf("post-emergency exit: got %d want curve(72)=68", snap3.CurrentSpeed)
 	}
-	// On the flat-temp cycle the D-term is zero; the setpoint must converge,
-	// not diverge upward (allow a small EWMA-recovery delta).
-	if d := snap4.CurrentSpeed - snap3.CurrentSpeed; d > 3 {
-		t.Errorf("post-emergency setpoint did not settle: cycle3=%d cycle4=%d (delta %d > 3)",
-			snap3.CurrentSpeed, snap4.CurrentSpeed, d)
+	// Memoryless: identical reading ⇒ identical setpoint, exactly. No drift.
+	if snap4.CurrentSpeed != snap3.CurrentSpeed {
+		t.Errorf("memoryless curve should give identical setpoint on identical temp: cycle3=%d cycle4=%d",
+			snap3.CurrentSpeed, snap4.CurrentSpeed)
 	}
 }

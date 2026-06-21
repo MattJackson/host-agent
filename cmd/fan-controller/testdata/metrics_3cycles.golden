@@ -1,10 +1,10 @@
 # HELP fan_controller_fan_setpoint_percent Current chassis fan setpoint commanded by controller.
 # TYPE fan_controller_fan_setpoint_percent gauge
-fan_controller_fan_setpoint_percent 36
+fan_controller_fan_setpoint_percent 68
 
 # HELP fan_controller_base_speed_percent EWMA-smoothed baseline fan speed (24-48h adaptation).
 # TYPE fan_controller_base_speed_percent gauge
-fan_controller_base_speed_percent 20.0240
+fan_controller_base_speed_percent 20.0680
 
 # HELP fan_controller_samples_total Number of successful (non-emergency, temps-readable) PID cycles since first run (persisted across restarts; resets to 0 only if state is lost). Does not advance during sustained emergencies or sensor-read failures.
 # TYPE fan_controller_samples_total counter
@@ -28,10 +28,10 @@ fan_controller_class_temp_celsius{class="ssd"} 0
 
 # HELP fan_controller_class_target_celsius Per-class target temperature (deadband center) or assist threshold.
 # TYPE fan_controller_class_target_celsius gauge
-fan_controller_class_target_celsius{class="cpu"} 70
-fan_controller_class_target_celsius{class="passive_gpu"} 83
-fan_controller_class_target_celsius{class="hdd"} 40
-fan_controller_class_target_celsius{class="ssd"} 50
+fan_controller_class_target_celsius{class="cpu"} 60
+fan_controller_class_target_celsius{class="passive_gpu"} 75
+fan_controller_class_target_celsius{class="hdd"} 38
+fan_controller_class_target_celsius{class="ssd"} 48
 
 # HELP fan_controller_class_emergency_celsius Per-class emergency threshold — instant fans=100%.
 # TYPE fan_controller_class_emergency_celsius gauge
@@ -43,14 +43,14 @@ fan_controller_class_emergency_celsius{class="ssd"} 65
 
 # HELP fan_controller_class_candidate_percent Per-class PID candidate fan speed. max() across all classes drives fans.
 # TYPE fan_controller_class_candidate_percent gauge
-fan_controller_class_candidate_percent{class="cpu"} 28
+fan_controller_class_candidate_percent{class="cpu"} 68
 fan_controller_class_candidate_percent{class="passive_gpu"} 0
 fan_controller_class_candidate_percent{class="hdd"} 0
 fan_controller_class_candidate_percent{class="ssd"} 0
 
 # HELP fan_controller_class_proximity_floor_percent Per-class proximity-to-emergency floor (silent until temp enters approach window).
 # TYPE fan_controller_class_proximity_floor_percent gauge
-fan_controller_class_proximity_floor_percent{class="cpu"} 36
+fan_controller_class_proximity_floor_percent{class="cpu"} 0
 fan_controller_class_proximity_floor_percent{class="passive_gpu"} 0
 fan_controller_class_proximity_floor_percent{class="active_gpu"} 0
 fan_controller_class_proximity_floor_percent{class="hdd"} 0
@@ -70,4 +70,4 @@ fan_controller_active_gpu_own_fan_threshold 85
 
 # HELP fan_controller_binding_source_info Which source bound the fan decision this cycle (max-wins). 1 for the active source.
 # TYPE fan_controller_binding_source_info gauge
-fan_controller_binding_source_info{source="cpu_pf"} 1
+fan_controller_binding_source_info{source="cpu"} 1

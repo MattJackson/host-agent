@@ -64,18 +64,6 @@ type Controller struct {
 	LastHDDTemp int
 	LastSSDTemp int
 
-	// Sample-and-hold pacing for the slow disk plants (HDD/SSD). A spinning
-	// disk has ~minutes of thermal dead time, so stepping the fan every cycle
-	// (15-30s) winds the ramp up far past equilibrium before the temperature
-	// responds — overshoot, overcool, and a slow limit cycle. We instead take
-	// one gentle ramp step, then hold it until ~one dead-time has passed so we
-	// can see the plant react before stepping again. Only the gentle servo
-	// ramp is paced; the emergency trip and proximity floors stay instant.
-	lastHDDStep time.Time
-	lastSSDStep time.Time
-	heldHDDCand int
-	heldSSDCand int
-
 	// Persist cadence.
 	PersistInterval time.Duration
 	LastPersist     time.Time
@@ -221,63 +209,30 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 		return snap
 	}
 
-	// Exiting emergency? Pick max(MinFan, base, every proximity floor).
+	// Exiting emergency: clear the flag and let the curve below recompute the
+	// fan. The v3 curve is memoryless — a pure function of the current
+	// temperature — so once temps drop back under emergency it lands on the
+	// correct setpoint on this very cycle; no special exit-speed handoff needed.
 	if c.InEmergency {
-		intBase := clampInt(int(c.BaseSpeed+0.5), cfg.MinFan, cfg.MaxFan)
-		exitSpeed := intBase
-		floors := c.proximityFloors(reading)
-		for _, f := range floors {
-			if f.Value > exitSpeed {
-				exitSpeed = f.Value
-			}
-		}
-		c.CurrentSpeed = exitSpeed
-		_ = c.IPMI.SetFan(ctx, c.CurrentSpeed)
-		c.Log.Printf("Emergency cleared — fan=%d%% (base=%d cpu_pf=%d pg_pf=%d ag_pf=%d hdd_pf=%d ssd_pf=%d)",
-			c.CurrentSpeed, intBase,
-			floors[0].Value, floors[1].Value, floors[2].Value, floors[3].Value, floors[4].Value)
+		c.Log.Printf("Emergency cleared — resuming curve control")
 		c.InEmergency = false
 	}
 
-	// Compute per-class PID candidates.
-	cpuCand := control.StepPID(control.PIDParams{
-		Temp: reading.CPUMax, Target: cfg.CPUTarget, Deadband: cfg.CPUDeadband,
-		LastTemp: c.LastCPUTemp, CurrentSpeed: c.CurrentSpeed,
-		MinFan: cfg.MinFan, MaxFan: cfg.MaxFan,
-		FanGain: cfg.FanGain, DerivativeGain: cfg.DerivativeGain,
-		DeadbandDriftRate: cfg.DeadbandDriftRate,
-	})
-	pgCand := control.StepPID(control.PIDParams{
-		Temp: reading.PassiveGPUMax, Target: cfg.GPUTarget, Deadband: cfg.GPUDeadband,
-		LastTemp: c.LastPGTemp, CurrentSpeed: c.CurrentSpeed,
-		MinFan: cfg.MinFan, MaxFan: cfg.MaxFan,
-		FanGain: cfg.FanGain, DerivativeGain: cfg.DerivativeGain,
-		DeadbandDriftRate: cfg.DeadbandDriftRate,
-	})
-	hddCand := c.pacedStep(control.PIDParams{
-		Temp: reading.HDDMax, Target: cfg.HDDTarget, Deadband: cfg.HDDDeadband,
-		LastTemp: c.LastHDDTemp, CurrentSpeed: c.CurrentSpeed,
-		MinFan: cfg.MinFan, MaxFan: cfg.MaxFan,
-		FanGain: cfg.FanGain, DerivativeGain: cfg.DerivativeGain,
-		DeadbandDriftRate: cfg.DeadbandDriftRate,
-	}, cfg.HDDStepInterval, &c.lastHDDStep, &c.heldHDDCand)
-	ssdCand := c.pacedStep(control.PIDParams{
-		Temp: reading.SSDMax, Target: cfg.SSDTarget, Deadband: cfg.SSDDeadband,
-		LastTemp: c.LastSSDTemp, CurrentSpeed: c.CurrentSpeed,
-		MinFan: cfg.MinFan, MaxFan: cfg.MaxFan,
-		FanGain: cfg.FanGain, DerivativeGain: cfg.DerivativeGain,
-		DeadbandDriftRate: cfg.DeadbandDriftRate,
-	}, cfg.SSDStepInterval, &c.lastSSDStep, &c.heldSSDCand)
+	// v3 unified control: ONE memoryless proportional temperature→fan curve per
+	// class — fan = MinFan at the class's comfort temp, rising linearly to
+	// MaxFan at its emergency temp. Identical law for every class; only the
+	// per-class comfort/emergency envelope differs. No PID, no setpoint, no
+	// integrator, so it cannot wind up or hunt regardless of plant speed.
+	// max() across classes drives the chassis, plus the active-GPU own-fan
+	// assist. See docs/fan-controller-v3-design.md.
+	cpuCurve := control.Curve(reading.CPUMax, cfg.CPUComfort, cfg.CPUEmergency, cfg.MinFan, cfg.MaxFan)
+	pgCurve := control.Curve(reading.PassiveGPUMax, cfg.GPUComfort, cfg.GPUEmergency, cfg.MinFan, cfg.MaxFan)
+	hddCurve := control.Curve(reading.HDDMax, cfg.HDDComfort, cfg.HDDEmergency, cfg.MinFan, cfg.MaxFan)
+	ssdCurve := control.Curve(reading.SSDMax, cfg.SSDComfort, cfg.SSDEmergency, cfg.MinFan, cfg.MaxFan)
 
-	// Per-class proximity floors. Each gates on temp > 0.
-	floors := c.proximityFloors(reading)
-	cpuPF, pgPF, agPF, hddPF, ssdPF := floors[0].Value, floors[1].Value, floors[2].Value, floors[3].Value, floors[4].Value
-
-	// Active-GPU assist: chassis-floor lift driven by the card's OWN fan
-	// speed, not its die temperature. Card's own fan is quieter than the
-	// chassis; chassis stays out of the way until the card runs out of
-	// self-cooling headroom (own fan ≥ threshold). Die-temp safety is
-	// covered separately by ACTIVE_GPU_EMERGENCY in the emergency check.
+	// Active-GPU assist: chassis-floor lift driven by the card's OWN fan speed,
+	// not its die temperature — the card's own fan is the authoritative signal
+	// of whether it needs outside help. Die-temp safety is the emergency check.
 	agAssist := 0
 	if reading.ActiveGPUMax > 0 {
 		agAssist = control.ActiveGPUAssist(
@@ -286,18 +241,13 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 		)
 	}
 
-	// max-wins aggregation — order matches bash so tie-breaking does too.
+	// max-wins aggregation across the per-class curves + assist.
 	r := control.MaxWins(
-		control.MaxCandidate{Name: "cpu", Value: cpuCand},
+		control.MaxCandidate{Name: "cpu", Value: cpuCurve},
 		[]control.MaxCandidate{
-			{Name: "pg", Value: pgCand},
-			{Name: "hdd", Value: hddCand},
-			{Name: "ssd", Value: ssdCand},
-			{Name: "cpu_pf", Value: cpuPF},
-			{Name: "pg_pf", Value: pgPF},
-			{Name: "ag_pf", Value: agPF},
-			{Name: "hdd_pf", Value: hddPF},
-			{Name: "ssd_pf", Value: ssdPF},
+			{Name: "pg", Value: pgCurve},
+			{Name: "hdd", Value: hddCurve},
+			{Name: "ssd", Value: ssdCurve},
 			{Name: "ag_assist", Value: agAssist},
 		},
 		cfg.MinFan, cfg.MaxFan,
@@ -310,13 +260,12 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 	// and fans run away to 100%. Idempotent — same value to same BMC.
 	_ = c.IPMI.SetFan(ctx, c.CurrentSpeed)
 
-	// Log line — match bash shape.
-	c.Log.Printf("%scpu:%d p_gpu:%d a_gpu:%d hdd:%d ssd:%d | pid c%d/p%d/h%d/s%d pf c%d/p%d/a%d/h%d/s%d ag_assist:%d → %d%%(%s) base:%s",
+	// Log line.
+	c.Log.Printf("%scpu:%d p_gpu:%d a_gpu:%d hdd:%d ssd:%d | curve c%d/p%d/h%d/s%d ag_assist:%d → %d%%(%s)",
 		reading.Details,
 		reading.CPUMax, reading.PassiveGPUMax, reading.ActiveGPUMax, reading.HDDMax, reading.SSDMax,
-		cpuCand, pgCand, hddCand, ssdCand,
-		cpuPF, pgPF, agPF, hddPF, ssdPF,
-		agAssist, c.CurrentSpeed, r.Source, formatBase(c.BaseSpeed))
+		cpuCurve, pgCurve, hddCurve, ssdCurve,
+		agAssist, c.CurrentSpeed, r.Source)
 
 	// EWMA + samples.
 	c.BaseSpeed = control.Ewma(c.BaseSpeed, float64(c.CurrentSpeed), cfg.AdaptAlpha)
@@ -349,124 +298,46 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 	}
 
 	snap := metrics.Snapshot{
-		CurrentSpeed:             c.CurrentSpeed,
-		BaseSpeed:                c.BaseSpeed,
-		Samples:                  c.Samples,
-		CycleDurationSeconds:     c.lastCycleDuration,
-		InEmergency:              0,
-		CPUMax:                   reading.CPUMax,
-		PassiveGPUMax:            reading.PassiveGPUMax,
-		ActiveGPUMax:             reading.ActiveGPUMax,
-		ActiveGPUFanMax:          reading.ActiveGPUFanMax,
-		HDDMax:                   reading.HDDMax,
-		SSDMax:                   reading.SSDMax,
-		CPUTarget:                cfg.CPUTarget,
-		PassiveGPUTarget:         cfg.GPUTarget,
-		HDDTarget:                cfg.HDDTarget,
-		SSDTarget:                cfg.SSDTarget,
+		CurrentSpeed:         c.CurrentSpeed,
+		BaseSpeed:            c.BaseSpeed,
+		Samples:              c.Samples,
+		CycleDurationSeconds: c.lastCycleDuration,
+		InEmergency:          0,
+		CPUMax:               reading.CPUMax,
+		PassiveGPUMax:        reading.PassiveGPUMax,
+		ActiveGPUMax:         reading.ActiveGPUMax,
+		ActiveGPUFanMax:      reading.ActiveGPUFanMax,
+		HDDMax:               reading.HDDMax,
+		SSDMax:               reading.SSDMax,
+		// v3: the "target" metric now carries the curve's comfort (ramp-start)
+		// temperature — the per-class control parameter.
+		CPUTarget:                cfg.CPUComfort,
+		PassiveGPUTarget:         cfg.GPUComfort,
+		HDDTarget:                cfg.HDDComfort,
+		SSDTarget:                cfg.SSDComfort,
 		CPUEmergency:             cfg.CPUEmergency,
 		PassiveGPUEmergency:      cfg.GPUEmergency,
 		ActiveGPUEmergency:       cfg.ActiveGPUEmergency,
 		ActiveGPUOwnFanThreshold: cfg.ActiveGPUOwnFanThreshold,
 		HDDEmergency:             cfg.HDDEmergency,
 		SSDEmergency:             cfg.SSDEmergency,
-		CPUCand:                  cpuCand,
-		PGCand:                   pgCand,
-		HDDCand:                  hddCand,
-		SSDCand:                  ssdCand,
-		CPUPF:                    cpuPF,
-		PGPF:                     pgPF,
-		AGPF:                     agPF,
-		HDDPF:                    hddPF,
-		SSDPF:                    ssdPF,
-		AGAssist:                 agAssist,
-		Source:                   r.Source,
+		// The per-class "candidate" metric now carries the curve output. The
+		// legacy proximity-floor (PF) fields are retired in v3 (the curve IS the
+		// floor); kept at 0 for metric-schema stability.
+		CPUCand:  cpuCurve,
+		PGCand:   pgCurve,
+		HDDCand:  hddCurve,
+		SSDCand:  ssdCurve,
+		CPUPF:    0,
+		PGPF:     0,
+		AGPF:     0,
+		HDDPF:    0,
+		SSDPF:    0,
+		AGAssist: agAssist,
+		Source:   r.Source,
 	}
 	_ = metrics.WriteAtomic(c.MetricsPath, snap)
 	return snap
-}
-
-// defaultStepIntervalSec is the sample-and-hold pacing applied to the slow
-// disk plants when no per-class HDD_STEP_INTERVAL/SSD_STEP_INTERVAL is set.
-// ~4 min ≈ the measured thermal dead time of a spinning disk, so the servo
-// takes one step and waits roughly that long to see the response before the
-// next — enough to stop the ramp out-running the plant and overshooting.
-const defaultStepIntervalSec = 240
-
-// pacedStep is StepPID with sample-and-hold pacing for a slow-plant class
-// (HDD/SSD). Inside the deadband it holds the current speed exactly like
-// StepPID (instant). OUTSIDE the band — the gentle servo ramp — it takes at
-// most one step per intervalSec and holds the last stepped candidate in
-// between, so the fan doesn't wind up past equilibrium during the disk's
-// minutes-long thermal dead time. last/held are per-class persistent state.
-//
-// Safety is unaffected: the emergency trip short-circuits Cycle() before this
-// runs, and the proximity floor is computed and max()'d in separately and is
-// never paced — so approach-to-emergency response stays instant.
-func (c *Controller) pacedStep(p control.PIDParams, intervalSec int, last *time.Time, held *int) int {
-	if p.Temp <= 0 {
-		// Abstain (no reading); reset held so a stale value can't bind max().
-		*held = 0
-		return 0
-	}
-	if intervalSec <= 0 {
-		intervalSec = defaultStepIntervalSec
-	}
-	// Inside the deadband: hold current speed (identical to StepPID's band
-	// branch). Do NOT touch the pace clock — keeping it running means edge
-	// jitter across the band boundary can't trigger an unpaced step.
-	if abs(p.Temp-p.Target) <= p.Deadband {
-		cand := clampInt(p.CurrentSpeed, p.MinFan, p.MaxFan)
-		*held = cand
-		return cand
-	}
-	// Outside the band: pace the ramp. While we're still within intervalSec of
-	// the last step, hold — give the plant time to react before stepping again.
-	now := c.Now()
-	if !last.IsZero() && now.Sub(*last) < time.Duration(intervalSec)*time.Second {
-		return clampInt(*held, p.MinFan, p.MaxFan)
-	}
-	cand := control.StepPID(p)
-	*held = cand
-	*last = now
-	return cand
-}
-
-// abs is the int absolute value used by pacedStep's deadband check.
-func abs(x int) int {
-	if x < 0 {
-		return -x
-	}
-	return x
-}
-
-// proximityFloors computes the 5 per-class proximity floors in canonical
-// order: cpu, pg, ag, hdd, ssd. Returns a fixed-length slice.
-func (c *Controller) proximityFloors(reading sensors.Reading) []control.MaxCandidate {
-	cfg := c.Cfg
-	floors := []control.MaxCandidate{
-		{Name: "cpu_pf", Value: 0},
-		{Name: "pg_pf", Value: 0},
-		{Name: "ag_pf", Value: 0},
-		{Name: "hdd_pf", Value: 0},
-		{Name: "ssd_pf", Value: 0},
-	}
-	if reading.CPUMax > 0 {
-		floors[0].Value = control.ProximityFloor(reading.CPUMax, cfg.CPUEmergency, cfg.CPUApproachWindow, cfg.MinFan, cfg.MaxFan)
-	}
-	if reading.PassiveGPUMax > 0 {
-		floors[1].Value = control.ProximityFloor(reading.PassiveGPUMax, cfg.GPUEmergency, cfg.GPUApproachWindow, cfg.MinFan, cfg.MaxFan)
-	}
-	// Active GPU has no temperature-based proximity floor — own-fan-driven
-	// assist (see main loop) supersedes it. ag_pf stays 0 as a fixed slot
-	// for log/metric schema stability.
-	if reading.HDDMax > 0 {
-		floors[3].Value = control.ProximityFloor(reading.HDDMax, cfg.HDDEmergency, cfg.HDDApproachWindow, cfg.MinFan, cfg.MaxFan)
-	}
-	if reading.SSDMax > 0 {
-		floors[4].Value = control.ProximityFloor(reading.SSDMax, cfg.SSDEmergency, cfg.SSDApproachWindow, cfg.MinFan, cfg.MaxFan)
-	}
-	return floors
 }
 
 // snapshotEmergency builds a Snapshot with the PID/floor fields zeroed.
@@ -486,10 +357,10 @@ func (c *Controller) snapshotEmergency(reading sensors.Reading, source string) m
 		ActiveGPUFanMax:          reading.ActiveGPUFanMax,
 		HDDMax:                   reading.HDDMax,
 		SSDMax:                   reading.SSDMax,
-		CPUTarget:                cfg.CPUTarget,
-		PassiveGPUTarget:         cfg.GPUTarget,
-		HDDTarget:                cfg.HDDTarget,
-		SSDTarget:                cfg.SSDTarget,
+		CPUTarget:                cfg.CPUComfort,
+		PassiveGPUTarget:         cfg.GPUComfort,
+		HDDTarget:                cfg.HDDComfort,
+		SSDTarget:                cfg.SSDComfort,
 		CPUEmergency:             cfg.CPUEmergency,
 		PassiveGPUEmergency:      cfg.GPUEmergency,
 		ActiveGPUEmergency:       cfg.ActiveGPUEmergency,
@@ -498,16 +369,6 @@ func (c *Controller) snapshotEmergency(reading sensors.Reading, source string) m
 		SSDEmergency:             cfg.SSDEmergency,
 		Source:                   source,
 	}
-}
-
-// formatBase renders the EWMA baseline the way bash logs it. After any
-// ewma() call, $base_speed is awk's "%.4f" output (always 4 decimals).
-// We replicate that. On the first cycle (before any EWMA update has
-// run), the bash original logs the raw integer assigned from $MIN_FAN
-// — but the log line we're matching here runs AFTER one full cycle,
-// post-EWMA, so %.4f is always correct.
-func formatBase(b float64) string {
-	return fmt.Sprintf("%.4f", b)
 }
 
 func clampInt(v, lo, hi int) int {
