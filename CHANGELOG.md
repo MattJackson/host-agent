@@ -6,6 +6,73 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-06-21
+
+### Changed — one control law for every class (memoryless proportional curve)
+
+Replaces the per-class integrating PID + adaptive setpoint, plus everything
+that accreted to tame it across v0.3.9→v0.3.17 (drift, deadband, sample-and-hold
+pacing, the per-server constant fan floor), with a **single law used identically
+for every thermal class**:
+
+```
+fan(t) = MIN_FAN at the class's comfort temp, rising linearly to MAX_FAN at its
+         emergency temp   — a pure function of the current temperature
+```
+
+The only per-class difference is a two-number envelope (`*_COMFORT`,
+`*_EMERGENCY`); there is no per-class control *logic*. Full design and rationale
+in `docs/fan-controller-v3-design.md`.
+
+**Why.** The whole v0.3.x line chased one symptom — fans hunting / overshooting
+/ running hot — through a sequence of per-plant workarounds. Root cause: the
+controller *integrated*, so it wound up on the slow disk plant (dead time ≈ time
+constant → overshoot → limit cycle) and pinned at 100% on the hot-tolerant
+passive GPU. A memoryless proportional curve has neither failure mode — it
+cannot wind up, so plant speed stops mattering for stability. One law is stable
+on every plant, fast or slow, with zero special-casing.
+
+**Tradeoff (by design).** Proportional control settles with a small steady-state
+offset — it holds *near* a comfortable band, not pinned to an exact degree. That
+leniency is exactly why it never hunts. Disks settle in the low-40s and hold
+flat; the passive GPU runs a bit louder than the old drift-optimized behavior
+(no "ride hot to stay quiet") but is stable and safe.
+
+### Added
+- Per-class `CPU_COMFORT` / `GPU_COMFORT` / `HDD_COMFORT` / `SSD_COMFORT` — the
+  curve's ramp-start temperature (the single per-class control knob). Falls back
+  to the legacy `*_TARGET` on un-migrated profiles.
+
+### Removed
+- The live integrating-PID control path, `HDD_STEP_INTERVAL`/`SSD_STEP_INTERVAL`
+  (v0.3.15 pacing), and the XC730xd `MIN_FAN=55` constant-floor + target/deadband
+  overrides (v0.3.16/0.3.17). The `dell_xc730xd_12.env` profile is now just
+  `HDD_COMFORT=33` (cool-NAS bias).
+- Dead pacing/floor code and tests.
+
+### Safety
+- Unchanged and universal: the emergency trip (temp ≥ emergency → 100%, short
+  circuit) and the sensor-read-failure fail-safe (→ 100%) are untouched and
+  instant. Memoryless control also means no persisted setpoint can latch a wrong
+  value across a transient or restart — correct on the first cycle, no warmup.
+
+### Metrics
+- `fan_controller_class_target_celsius` now carries the per-class **comfort**
+  temperature; `fan_controller_class_candidate_percent` carries the curve output;
+  the proximity-floor metric is retired (emitted as 0). The `adaptive_*` metrics
+  go idle (the reconciler is unused).
+
+### Migration
+- Drop-in: the curve produces a valid setpoint from cycle 1 (no warmup, no state
+  to restore). Disks settle a couple degrees off "target" — the proportional
+  offset, by design. Legacy `*_TARGET`/`*_DEADBAND`/`*_APPROACH_WINDOW` remain
+  accepted but unused by the controller; `*_COMFORT` is the v3 knob.
+
+### Follow-up (tracked, not in this release)
+- Retire the now-vestigial legacy PID code (`StepPID`/`PIDParams`, EWMA
+  base-speed, D-term fields) and the `internal/adaptive` package. See design
+  doc §5.
+
 ## [0.3.17] — 2026-06-20
 
 ### Changed — XC730xd-12 (primary NAS): constant fan floor for cool drives over noise
