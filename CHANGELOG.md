@@ -6,6 +6,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-06-21
+
+### Fixed — box scan now writes live metrics (was invisible to Grafana)
+
+The first-run box scan sets fans directly and doesn't run the normal control
+cycle, so `metrics.prom` (setpoint, temps) **froze for the whole ~30-min scan** —
+the fleet's Prometheus/Grafana went blind exactly during the dramatic fan event.
+Observed live on the v0.6.0 rollout: unraid-1's setpoint metric sat at its
+pre-scan value for ~30 min while fans were physically stepping 80→55→30%.
+
+The scan now writes a `metrics.Snapshot` each sample cycle (current scan fan
+level + live temps, `source="scan"`), so the scan is visible in Grafana and the
+operator can watch it learn. No control behavior change.
+
 ## [0.6.0] — 2026-06-21
 
 ### Added — first-run box scan ("no baseline → get one, then trim")
