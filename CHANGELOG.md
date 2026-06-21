@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.3.17] — 2026-06-20
+
+### Changed — XC730xd-12 (primary NAS): constant fan floor for cool drives over noise
+
+**Context**: v0.3.16's stable point (43°C) is stable but sits at the warm edge of the HDD ideal-longevity band (~30-40°C). For a primary NAS the operator prioritizes drive safety over noise, and the plant analysis showed you cannot get cool *and* quiet *and* stable on this array (dead time ≈ time constant — servoing to a cool target hunts/overshoots).
+
+**Change**: resolve the tradeoff in favor of cool+stable by holding a high **constant chassis floor** instead of servoing — `MIN_FAN=55` in `profiles/dell_xc730xd_12.env`. From this array's measured fan→temp curve (~45%→40°C, ~55%→38°C), a 55% floor parks every drive in the ~38°C ideal band with **zero servoing — no hunt, no overshoot, rock-stable**. The per-class PID and proximity floor still stack on top for transients and the emergency trip is unchanged; this only raises the floor they can't drop below. `HDD_TARGET`/`HDD_DEADBAND` reverted to the shipped defaults (40/3) — with the floor holding ~38°C the servo rarely engages and acts only as a backstop.
+
+Noise is intentionally traded for cooler drives. Profile-only, this chassis only; the shipped default (`MIN_FAN=10`, `HDD_TARGET=40`) is unchanged for other hosts. The 55% value is the data-derived estimate and may be tuned live to land the exact temp.
+
 ## [0.3.16] — 2026-06-20
 
 ### Changed — per-server HDD tuning for the XC730xd-12 (target the measured stable point)
