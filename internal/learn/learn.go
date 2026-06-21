@@ -54,10 +54,20 @@ type Params struct {
 	// the curve within the safe envelope (typically MinSafe .. Emergency-1).
 	MinRampStart int
 	MaxRampStart int
+	// MinFanFloor: the curve's MIN_FAN %, i.e. the fan demand at/below comfort.
+	// The reclaim ("too cool → raise ramp-start to quiet the fan") branch is a
+	// no-op for noise when demand is already at this floor — there is no fan
+	// above the floor to give back. Acting anyway only raises the temperature at
+	// which cooling starts, with zero noise benefit, so the ramp-start ratchets
+	// monotonically toward MaxRampStart every idle tick. THAT is the drift bug
+	// that ran docker-1's CPU comfort to 79 (fans pinned at 10% while the CPU
+	// climbed to 77). Below this floor the reclaim branch holds instead.
+	MinFanFloor float64
 }
 
 // DefaultParams returns conservative defaults for a slow disk/CPU plant.
-func DefaultParams(minRampStart, maxRampStart int) Params {
+// minFanFloor is the curve's MIN_FAN % (see Params.MinFanFloor).
+func DefaultParams(minRampStart, maxRampStart int, minFanFloor float64) Params {
 	return Params{
 		ToleranceHotC:  2.0, // tolerate up to +2°C over target before adding fan (no chase)
 		ToleranceCoolC: 1.0, // reclaim fan once ≥1°C below target (don't stay over-fanned)
@@ -66,6 +76,7 @@ func DefaultParams(minRampStart, maxRampStart int) Params {
 		SatFanP90:      99,
 		MinRampStart:   minRampStart,
 		MaxRampStart:   maxRampStart,
+		MinFanFloor:    minFanFloor,
 	}
 }
 
@@ -80,6 +91,7 @@ const (
 	ReasonTooCool     Reason = "too_cool"     // raised ramp-start (less fan, quieter)
 	ReasonSaturated   Reason = "saturated"    // too hot but fan maxed — can't help
 	ReasonClamped     Reason = "clamped"      // wanted to move but hit a bound
+	ReasonAtFloor     Reason = "at_floor"     // too cool but fan already at MIN_FAN — nothing to reclaim
 )
 
 // Decision is the learner's output for one class for one slow tick.
@@ -134,7 +146,13 @@ func TargetSeek(steadyTempC, tempStdDev, fanDemandP90 float64, currentRampStart,
 
 	case errC <= -p.ToleranceCoolC:
 		// At/below the cool tolerance under target → using more fan than needed
-		// → RAISE ramp-start (reclaim fan, quieter).
+		// → RAISE ramp-start (reclaim fan, quieter). BUT only if there's fan
+		// above the floor to reclaim: if demand is already at MIN_FAN, raising
+		// ramp-start buys zero quiet and just lifts the cooling onset — the
+		// ratchet that drifted comfort to the ceiling. Hold instead.
+		if fanDemandP90 <= p.MinFanFloor {
+			return hold(ReasonAtFloor)
+		}
 		nr := clampInt(currentRampStart+stepFor(-errC), p.MinRampStart, p.MaxRampStart)
 		if nr == currentRampStart {
 			return hold(ReasonClamped)

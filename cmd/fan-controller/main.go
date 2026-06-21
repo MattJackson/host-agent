@@ -36,6 +36,12 @@ var version = "dev"
 const (
 	profileDir          = "/etc/fan-controller/profiles"
 	stateDir            = "/var/lib/host-agent/state"
+	// safeStartFan is the minimum fan % the controller will engage manual mode
+	// at on startup, regardless of the resumed last_speed. Taking the BMC into
+	// manual disables iDRAC's auto ramp, so starting low on a freshly-booted
+	// (possibly hot) box is unsafe; cycle 1 trims down from here within one
+	// interval. Loud-but-safe beats quiet-but-cooking.
+	safeStartFan = 50
 	stateFile           = "/var/lib/host-agent/state/base"
 	metricsFile         = "/var/lib/host-agent/state/metrics.prom"
 	adaptiveMetricsFile = "/var/lib/host-agent/state/adaptive.prom"
@@ -255,6 +261,25 @@ func main() {
 	c.LoadState()
 
 	// 5. Engage manual control + apply initial speed.
+	//
+	// Failsafe: do NOT engage at a resumed LOW speed. At startup the observer
+	// window is cold and the plant is unverified — a freshly rebooted box may be
+	// hot (boot storm) while the persisted last_speed is a quiet idle value. The
+	// moment we take the BMC into manual we also disable iDRAC's own thermal
+	// ramp, so engaging at, say, 10% pins the fans low on a hot box until our
+	// first cycle lands. This is the failure that cooked docker-1. So we clamp
+	// the INITIAL engage UP to a safe floor and let cycle 1 (which runs
+	// immediately, below) trim it down to the curve's real demand within one
+	// interval. Principle: always converge toward quiet from the SAFE side.
+	startSpeed := c.CurrentSpeed
+	if startSpeed < safeStartFan {
+		logger.Printf("startup failsafe: resumed speed %d%% below safe floor — engaging at %d%% until first cycle verifies the plant", startSpeed, safeStartFan)
+		startSpeed = safeStartFan
+	}
+	if startSpeed > cfg.MaxFan {
+		startSpeed = cfg.MaxFan
+	}
+	c.CurrentSpeed = startSpeed
 	if err := ipmiClient.EngageManual(ctx); err != nil {
 		logger.Printf("WARN: EngageManual: %v", err)
 	}

@@ -6,6 +6,44 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.6.6] — 2026-06-21
+
+### Fixed — learner drift-up that pinned fans low on a hot box (docker-1 thermal event)
+
+docker-1 came back from a reboot with host-agent swinging the chassis fans
+100%→10%→100% while the CPU sat hot — the controller fighting itself. Root cause
+was the **target-seeking learner ratcheting comfort up forever during idle**.
+
+The learner's "too cool → raise ramp-start to reclaim fan (quieter)" branch fired
+even when fan demand was **already at the MIN_FAN floor**. With the fan floored
+there is nothing to reclaim, so the move bought zero quiet and only lifted the
+temperature at which cooling begins. Every settled idle tick nudged it again, so
+ramp-start walked monotonically toward the ceiling: docker-1's learned comforts
+had drifted to **cpu 79 / ssd 64 / hdd 49** (defaults 60 / 48 / 38). The
+memoryless curve then held fans at 10% until temps approached those drifted
+comforts — the logs show the CPU climbing 65→77 °C with the fan glued at
+`→ 10%(cpu)` — and once it finally neared the emergency trip the fans slammed to
+100%, crashed the temp, and dropped back: the observed limit cycle. Compounded by
+`HOST_AGENT_MODE=min-noise` (targets at the hot end of the envelope) and manual
+BMC mode disabling iDRAC's own safety ramp.
+
+Three fixes:
+
+- **Floor-guarded reclaim (root cause).** `learn.TargetSeek` now holds with a new
+  `at_floor` reason when steady-state is below target but fan demand is already at
+  `MIN_FAN` — no fan above the floor to give back, so ramp-start cannot ratchet up
+  during idle. Regression test simulates 50 idle ticks and asserts zero drift.
+- **Schema-epoch auto-cleanup.** `learned.json` now carries a `learnEpoch`; on a
+  mismatch the agent discards the stale state and relearns from a clean scan. This
+  release bumps the epoch, so simply rolling out the new image makes every box
+  drop its drifted comforts fleet-wide — no manual per-box wipe. Routine releases
+  that don't change learning semantics keep the epoch and preserve learnings.
+- **Startup failsafe.** The controller no longer engages manual mode at a resumed
+  LOW speed. Taking the BMC into manual disables iDRAC's auto ramp, so a quiet
+  persisted `last_speed` would pin a freshly-booted (possibly hot) box low until
+  the first cycle. It now engages at a `safeStartFan` (50%) floor and trims down
+  from there — always converging toward quiet from the safe side.
+
 ## [0.6.1] — 2026-06-21
 
 ### Fixed — box scan now writes live metrics (was invisible to Grafana)

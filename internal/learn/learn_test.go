@@ -2,7 +2,7 @@ package learn
 
 import "testing"
 
-func params() Params { return DefaultParams(20, 49) }
+func params() Params { return DefaultParams(20, 49, 10) }
 
 func TestTargetSeek_NotSettled_HoldsOff(t *testing.T) {
 	// Window too noisy (stddev above gate) → never act, even if far from target.
@@ -67,6 +67,29 @@ func TestTargetSeek_TooHotButSaturated_HoldsOff(t *testing.T) {
 	}
 }
 
+// TestTargetSeek_TooCoolButAtFloor_HoldsOff is the docker-1 drift regression.
+// A class idling well below target with the fan ALREADY at MIN_FAN (nothing to
+// reclaim) must HOLD, not raise ramp-start. The old code ratcheted ramp-start up
+// every idle tick — walking CPU comfort to 79 while fans sat at 10% and the CPU
+// climbed to 77 — because "too cool → raise" ignored that the fan was floored.
+func TestTargetSeek_TooCoolButAtFloor_HoldsOff(t *testing.T) {
+	p := params() // MinFanFloor = 10
+	// 25°C vs target 38 (way too cool), settled, fan p90 at the 10% floor.
+	d := TargetSeek(25, 0.3, 10, 33, 38, p)
+	if d.Acted || d.Reason != ReasonAtFloor || d.NewRampStart != 33 {
+		t.Fatalf("too cool but fan at floor must hold (nothing to reclaim): %+v", d)
+	}
+	// Repeated ticks must NOT walk ramp-start up (the ratchet that drifted to 79).
+	rampStart := 33
+	for tick := 0; tick < 50; tick++ {
+		d := TargetSeek(25, 0.3, 10, rampStart, 38, p)
+		rampStart = d.NewRampStart
+	}
+	if rampStart != 33 {
+		t.Fatalf("ramp-start must not drift while fan floored: 33→%d over 50 idle ticks", rampStart)
+	}
+}
+
 func TestTargetSeek_ClampsAtBounds(t *testing.T) {
 	// Too cool but already at the max ramp-start → clamped, no spurious "acted".
 	p := params()
@@ -97,7 +120,7 @@ func TestTargetSeek_StepIsRateLimited(t *testing.T) {
 func TestTargetSeek_ConvergesAndHolds(t *testing.T) {
 	const offset = 6 // steadyTemp = rampStart + offset
 	const target = 38
-	p := DefaultParams(20, 49)
+	p := DefaultParams(20, 49, 10)
 
 	for _, start := range []int{49, 20, 40, 25} { // start hot, cold, high, low
 		rampStart := start
@@ -136,7 +159,7 @@ func TestTargetSeek_ConvergesAndHolds(t *testing.T) {
 func TestTargetSeek_QuietsWhenOverCooled(t *testing.T) {
 	const offset = 6
 	const target = 40
-	p := DefaultParams(20, 49)
+	p := DefaultParams(20, 49, 10)
 	rampStart := 25 // steady 31 — way over-cooled (fan too high)
 	moves := 0
 	for tick := 0; tick < 60; tick++ {

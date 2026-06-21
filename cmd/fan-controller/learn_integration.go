@@ -22,7 +22,22 @@ const learnedStatePath = stateDir + "/learned.json"
 // emergency.
 const learnComfortFloor = 20
 
+// learnEpoch is the learning-state schema/semantics version. BUMP IT whenever the
+// learner's objective or curve placement changes in a way that makes previously
+// persisted comfort values unsafe or meaningless to resume — on a mismatch
+// loadBaseline DISCARDS the stale state and the box relearns from a clean scan.
+// This is what lets a plain "push the new image" clean up the whole fleet: every
+// box reads its old learned.json, sees the wrong epoch, drops it, and re-learns
+// from the safe side. Routine releases that DON'T touch learning semantics keep
+// the same epoch so hard-won learnings survive the upgrade.
+//
+// epoch 2 (v0.6.6): floor-guarded reclaim. Pre-epoch (epoch 0/absent) comforts
+// were ratcheted up by the unguarded reclaim branch (docker-1 CPU→79) and MUST
+// be discarded.
+const learnEpoch = 2
+
 type baseline struct {
+	Epoch   int  `json:"epoch"`   // learnEpoch at save time; mismatch ⇒ discard + relearn
 	Scanned bool `json:"scanned"` // true once the first-run box scan has placed comfort
 	CPU     int  `json:"cpu"`
 	GPU     int  `json:"gpu"`
@@ -44,6 +59,14 @@ func loadBaseline(path string, cfg *config.Config, logger controller.Logger) (sc
 		logger.Printf("learn: ignoring unreadable %s: %v", path, err)
 		return false
 	}
+	// Schema-epoch gate: stale-semantics state is discarded, not resumed. This is
+	// the fleet-wide auto-cleanup — an old (pre-floor-guard) learned.json would
+	// otherwise reload the drifted comforts that pinned fans low on a hot plant.
+	if bl.Epoch != learnEpoch {
+		logger.Printf("learn: discarding stale learned state (epoch %d != %d) — relearning from scan; %s", bl.Epoch, learnEpoch, path)
+		_ = os.Remove(path)
+		return false
+	}
 	apply := func(v int, dst *int, hi int) {
 		if v >= learnComfortFloor && v <= hi {
 			*dst = v
@@ -61,6 +84,7 @@ func loadBaseline(path string, cfg *config.Config, logger controller.Logger) (sc
 // saveBaseline atomically persists the current comfort + scanned flag.
 func saveBaseline(path string, cfg *config.Config, scanned bool) error {
 	b, err := json.Marshal(baseline{
+		Epoch:   learnEpoch,
 		Scanned: scanned,
 		CPU:     cfg.CPUComfort, GPU: cfg.GPUComfort, HDD: cfg.HDDComfort, SSD: cfg.SSDComfort,
 	})
@@ -104,7 +128,7 @@ func runLearnTick(cfg *config.Config, obs *adaptive.Observer, logger controller.
 		if st.TempP50 <= 0 {
 			continue // class absent or no data yet
 		}
-		p := learn.DefaultParams(learnComfortFloor, cl.emerg-1)
+		p := learn.DefaultParams(learnComfortFloor, cl.emerg-1, float64(cfg.MinFan))
 		d := learn.TargetSeek(st.TempP50, st.TempStdDev, st.FanDemandP90, *cl.comfort, cl.target, p)
 		if d.Acted {
 			logger.Printf("learn[%s]: steady=%.1f target=%d stddev=%.2f fanP90=%.0f → %s, comfort %d→%d",
