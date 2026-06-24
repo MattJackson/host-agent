@@ -34,7 +34,7 @@
 # final image stays small. VERSION is stamped into main.version via
 # -ldflags so `fan-controller --version` (if we ever add the flag)
 # matches /etc/host-agent-version.
-FROM golang:1.23-alpine AS go-builder
+FROM golang:1.26-alpine AS go-builder
 ARG VERSION=dev
 RUN apk add --no-cache upx
 WORKDIR /src
