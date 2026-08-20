@@ -53,6 +53,21 @@ type Controller struct {
 	Samples      int
 	InEmergency  bool
 
+	// FanControl gates every write to the BMC (EngageManual + SetFan).
+	// When false the controller is MONITOR-ONLY: it still reads sensors,
+	// runs the curve math, and emits metrics/log lines, but never touches
+	// fan control — iDRAC's own thermal policy owns the fans.
+	//
+	// This exists because a controller that has taken the BMC into manual
+	// mode but cannot command a fan speed is the single worst state: it
+	// disables iDRAC's automatic thermal protection AND fails to replace
+	// it, so the BMC falls back to its manual-mode failsafe (full-speed on
+	// 11G iDRAC6 / R410). main.go sets this false when the startup SetFan
+	// capability probe fails (the BMC rejects `0x30 0x30 0x02`, e.g. every
+	// pre-12G Dell) or when HOST_AGENT_FAN_CONTROL=off is set. New()
+	// defaults it true so capable boxes (R730xd and friends) are unchanged.
+	FanControl bool
+
 	// Diagnostic: wall-clock seconds the last Cycle() call took.
 	// Exposed via metrics.Snapshot.CycleDurationSeconds so we can SEE
 	// in Grafana how long each cycle takes instead of guessing.
@@ -101,7 +116,25 @@ func New(cfg *config.Config, ipmiClient *ipmi.Client, reader TempReader, log Log
 		LastSSDTemp:     -1,
 		PersistInterval: 60 * time.Second,
 		Now:             time.Now,
+		FanControl:      true,
 	}
+}
+
+// engageManual and setFan funnel every BMC write through the FanControl
+// gate. In monitor-only mode (FanControl=false) they are no-ops, so the
+// controller never disturbs iDRAC's automatic thermal policy.
+func (c *Controller) engageManual(ctx context.Context) {
+	if !c.FanControl {
+		return
+	}
+	_ = c.IPMI.EngageManual(ctx)
+}
+
+func (c *Controller) setFan(ctx context.Context, pct int) {
+	if !c.FanControl {
+		return
+	}
+	_ = c.IPMI.SetFan(ctx, pct)
 }
 
 // LoadState reads StatePath and seeds CurrentSpeed/BaseSpeed/Samples.
@@ -180,11 +213,11 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 	// fans) within ~30s when a non-Dell GPU/HBA is present; subsequent
 	// SetFan calls then become no-ops we cannot detect. Idempotent and
 	// cheap — one IPMI command per cycle keeps manual sticky.
-	_ = c.IPMI.EngageManual(ctx)
+	c.engageManual(ctx)
 	reading, ok := c.Reader.Read(ctx)
 	if !ok {
 		c.Log.Printf("Temp read failed — fans 100%% for safety")
-		_ = c.IPMI.SetFan(ctx, 100)
+		c.setFan(ctx, 100)
 		c.CurrentSpeed = 100
 		// Build a degenerate snapshot for metrics — emergency=1 conveys
 		// the safety state even though no class fired.
@@ -201,7 +234,7 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 		(reading.HDDMax > 0 && reading.HDDMax >= cfg.HDDEmergency) ||
 		(reading.SSDMax > 0 && reading.SSDMax >= cfg.SSDEmergency) {
 		if c.CurrentSpeed != 100 {
-			_ = c.IPMI.SetFan(ctx, 100)
+			c.setFan(ctx, 100)
 			c.CurrentSpeed = 100
 			c.Log.Printf("EMERGENCY (cpu:%d/%d p_gpu:%d/%d a_gpu:%d/%d hdd:%d/%d ssd:%d/%d) — fans 100%%",
 				reading.CPUMax, cfg.CPUEmergency,
@@ -269,7 +302,7 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 	// revert-to-auto watchdog tracks the fan-PWM command specifically;
 	// a steady-state cycle that skips SetFan lets manual control lapse
 	// and fans run away to 100%. Idempotent — same value to same BMC.
-	_ = c.IPMI.SetFan(ctx, c.CurrentSpeed)
+	c.setFan(ctx, c.CurrentSpeed)
 
 	// Log line.
 	c.Log.Printf("%scpu:%d p_gpu:%d a_gpu:%d hdd:%d ssd:%d | curve c%d/p%d/h%d/s%d ag_assist:%d → %d%%(%s)",

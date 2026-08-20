@@ -6,6 +6,43 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-08-20
+
+### Added — per-fan-index addressing for 11th-gen iDRAC6 (R310/R410/R510/R610/R710)
+
+11th-gen iDRAC6 BMCs reject the `0xff` "all fans" broadcast selector in the
+Dell OEM set-fan command (`raw 0x30 0x30 0x02 0xff <pct>`) with completion
+code `0xCC` ("Invalid data field") — that selector is a 12th-gen+ convention.
+The controller hardcoded `0xff`, so on those chassis every `SetFan` silently
+failed: the BMC was taken into manual mode (which *does* succeed) but never
+given a valid setpoint, and it fell back to its manual-mode failsafe —
+full-speed fans. `EngageManual` succeeding while `SetFan` failed made this
+read like a healthy controller in the logs.
+
+The fix teaches `SetFan` both dialects and a new `FAN_INDICES` config key
+selects between them:
+
+- `auto` (default) — probe `0xff`; if the BMC rejects it, discover the
+  accepted per-fan indices (`0x00`, `0x01`, …) and address each fan
+  individually. Per-index also works on 12G, so it is a safe universal
+  fallback.
+- `broadcast` — force the `0xff` write (skip the probe).
+- an explicit list/range (`0-7`, `0,1,2,3`) — force those indices; any the
+  BMC rejects are dropped so a slightly-wrong profile still works.
+
+If no dialect works the controller hands fans back to the BMC's automatic
+policy and runs **monitor-only** (sensors + metrics keep flowing) rather
+than stranding the box in manual mode with no setpoint. `HOST_AGENT_FAN_CONTROL=off`
+forces monitor-only explicitly. The 11G profiles ship `FAN_INDICES=auto`;
+12G+ profiles are unchanged (broadcast).
+
+### Fixed — no nvidia-gpu scrape job on GPU-less hosts
+
+vmagent unconditionally scraped `localhost:9835`, so CPU-only hosts logged a
+`connection refused` every interval and pushed a spurious `nvidia-gpu up=0`
+series. The scrape job is now gated on the same GPU detection the exporter
+uses, so GPU-less hosts carry no nvidia scrape config at all.
+
 ## [0.6.7] — 2026-06-21
 
 ### Fixed — residual learner drift on multi-class boxes (per-class demand)

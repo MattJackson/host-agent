@@ -359,3 +359,52 @@ func TestCycle_PostEmergency_CurveResumesCleanly(t *testing.T) {
 			snap3.CurrentSpeed, snap4.CurrentSpeed)
 	}
 }
+
+// TestCycle_MonitorOnly_NoBMCWrites asserts the FanControl gate: when
+// monitor-only, a full Cycle (including the emergency path) must issue
+// ZERO ipmitool calls, so iDRAC's automatic thermal policy is never
+// disturbed. This is the pre-12G R410 fix — a box whose BMC rejects
+// SetFan must be left on iDRAC auto, not stranded in manual failsafe.
+func TestCycle_MonitorOnly_NoBMCWrites(t *testing.T) {
+	cfg := defaultCfg(t)
+	dir := t.TempDir()
+	r := runner.NewFakeRunner()
+
+	// Emergency-hot CPU: in normal mode this fires SetFan(100) + EngageManual.
+	reader := &stubReader{
+		readings: []sensors.Reading{{CPUMax: 85, Details: "P0.t1:85 "}},
+		oks:      []bool{true},
+	}
+	c := New(cfg, ipmi.New(r), reader, &bufLog{},
+		filepath.Join(dir, "base"), filepath.Join(dir, "metrics.prom"))
+	c.Now = func() time.Time { return time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC) }
+	c.FanControl = false // monitor-only
+
+	snap := c.Cycle(context.Background())
+
+	var ipmiCalls int
+	for _, call := range r.Calls {
+		if call.Name == "ipmitool" {
+			ipmiCalls++
+			t.Errorf("monitor-only Cycle issued an ipmitool call: %v", call.Args)
+		}
+	}
+	if ipmiCalls != 0 {
+		t.Fatalf("monitor-only must issue 0 ipmitool calls, got %d", ipmiCalls)
+	}
+	// Metrics/observability still work: the emergency was still detected.
+	if snap.InEmergency != 1 {
+		t.Errorf("monitor-only should still compute+report emergency, InEmergency=%d", snap.InEmergency)
+	}
+}
+
+// TestNew_DefaultsFanControlOn guards the invariant that capable boxes
+// (R730xd) are unchanged: New() must default FanControl=true.
+func TestNew_DefaultsFanControlOn(t *testing.T) {
+	cfg := defaultCfg(t)
+	r := runner.NewFakeRunner()
+	c := New(cfg, ipmi.New(r), &stubReader{}, &bufLog{}, "/x", "/y")
+	if !c.FanControl {
+		t.Fatal("New() must default FanControl=true so capable boxes keep driving fans")
+	}
+}

@@ -280,13 +280,75 @@ func main() {
 		startSpeed = cfg.MaxFan
 	}
 	c.CurrentSpeed = startSpeed
-	if err := ipmiClient.EngageManual(ctx); err != nil {
-		logger.Printf("WARN: EngageManual: %v", err)
+
+	// Explicit operator opt-out: leave fans to the BMC entirely.
+	if v := os.Getenv("HOST_AGENT_FAN_CONTROL"); v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "off", "false", "0", "no", "disable", "disabled":
+			c.FanControl = false
+		}
 	}
-	if err := ipmiClient.SetFan(ctx, c.CurrentSpeed); err != nil {
-		logger.Printf("WARN: SetFan: %v", err)
+
+	if !c.FanControl {
+		logger.Printf("fan control DISABLED (HOST_AGENT_FAN_CONTROL) — MONITOR-ONLY: iDRAC owns the fans; sensors + metrics still run")
+		if err := ipmiClient.HandbackAuto(ctx); err != nil {
+			logger.Printf("WARN: HandbackAuto: %v", err)
+		}
+	} else {
+		// Engage manual, then resolve the fan-addressing DIALECT this BMC
+		// speaks. EngageManual takes the BMC out of its automatic thermal
+		// policy; SetFan is what actually drives the fans — but the selector
+		// byte differs by generation:
+		//
+		//   12G+ (R730xd …): accepts 0xff "all fans" broadcast.
+		//   11G  (R410 …)  : iDRAC6 REJECTS 0xff with 0xCC and requires each
+		//                    fan addressed by index (0x00, 0x01, …).
+		//
+		// The FAN_INDICES config key drives this (profile- or env-settable):
+		//   ""/"auto"  → probe: try 0xff, else discover per-fan indices.
+		//   "broadcast"→ force 0xff (skip probe).
+		//   "0-7"/"0,1"→ force those indices (verified, bad ones dropped).
+		//
+		// If NO dialect works we hand control back to iDRAC auto and drop to
+		// MONITOR-ONLY, rather than leaving the BMC stranded in manual with
+		// no valid setpoint (which pins an R410's fans to full-speed).
+		if err := ipmiClient.EngageManual(ctx); err != nil {
+			logger.Printf("WARN: EngageManual: %v", err)
+		}
+		spec := strings.ToLower(strings.TrimSpace(cfg.Raw["FAN_INDICES"]))
+		switch {
+		case spec == "" || spec == "auto":
+			idxs, broadcast, ok := ipmiClient.ProbeFanAddressing(ctx, c.CurrentSpeed)
+			switch {
+			case !ok:
+				handbackMonitorOnly(ctx, logger, ipmiClient, c, "BMC rejected fan-set in every dialect (0xff and all per-fan indices)")
+			case broadcast:
+				logger.Printf("fan addressing: broadcast 0xff — manual control engaged at %d%%", c.CurrentSpeed)
+			default:
+				ipmiClient.FanIndices = idxs
+				logger.Printf("fan addressing: per-fan-index %v (BMC rejects 0xff broadcast — 11G iDRAC6) — manual control engaged at %d%%", idxs, c.CurrentSpeed)
+			}
+		case spec == "broadcast":
+			if err := ipmiClient.SetFan(ctx, c.CurrentSpeed); err != nil {
+				handbackMonitorOnly(ctx, logger, ipmiClient, c, fmt.Sprintf("FAN_INDICES=broadcast but 0xff rejected (%v)", err))
+			} else {
+				logger.Printf("fan addressing: broadcast 0xff (FAN_INDICES) — manual control engaged at %d%%", c.CurrentSpeed)
+			}
+		default:
+			candidates, perr := parseFanIndices(spec)
+			if perr != nil {
+				handbackMonitorOnly(ctx, logger, ipmiClient, c, fmt.Sprintf("FAN_INDICES=%q is unparseable (%v)", cfg.Raw["FAN_INDICES"], perr))
+				break
+			}
+			idxs := ipmiClient.VerifyIndices(ctx, candidates, c.CurrentSpeed)
+			if len(idxs) == 0 {
+				handbackMonitorOnly(ctx, logger, ipmiClient, c, fmt.Sprintf("FAN_INDICES=%v but the BMC accepted none of them", candidates))
+			} else {
+				ipmiClient.FanIndices = idxs
+				logger.Printf("fan addressing: per-fan-index %v (FAN_INDICES) — manual control engaged at %d%%", idxs, c.CurrentSpeed)
+			}
+		}
 	}
-	logger.Printf("Manual control engaged at %d%%", c.CurrentSpeed)
 
 	// v0.5.0 first-run box scan: if this box has no baseline, learn its airflow
 	// once (drive fans through fixed levels, fit fan→temp, place each curve to
@@ -294,6 +356,15 @@ func main() {
 	// maintains it. Skipped on CPU-only boxes (nothing slow to learn) and when
 	// the scan can't run; either way we proceed and the learner trims from the
 	// profile default.
+	if !scanned && !c.FanControl {
+		// Box scan drives the fans through fixed levels; impossible in
+		// monitor-only mode. Mark scanned so we don't retry every boot.
+		logger.Printf("box scan: skipped (monitor-only — cannot drive fans)")
+		scanned = true
+		if err := saveBaseline(learnedStatePath, cfg, scanned); err != nil {
+			logger.Printf("WARN: baseline persist: %v", err)
+		}
+	}
 	if !scanned {
 		scanDwell := 10 * time.Minute
 		if v := os.Getenv("SCAN_DWELL_MINUTES"); v != "" {
@@ -594,4 +665,58 @@ func runAdaptiveLoop(ctx context.Context, logger controller.Logger, r *adaptive.
 			}
 		}
 	}
+}
+
+// handbackMonitorOnly returns fan control to iDRAC's automatic policy and
+// switches the controller to monitor-only. Called when no working fan-set
+// dialect is found — a box we cannot drive must be left on the BMC's own
+// thermal policy, never stranded in manual mode (which pins an R410 to
+// full-speed). Sensors + metrics keep running.
+func handbackMonitorOnly(ctx context.Context, logger *stdLogger, ipmiClient *ipmi.Client, c *controller.Controller, reason string) {
+	logger.Printf("MONITOR-ONLY: %s — handing fans back to iDRAC automatic. Sensors + metrics still run.", reason)
+	if err := ipmiClient.HandbackAuto(ctx); err != nil {
+		logger.Printf("WARN: HandbackAuto: %v", err)
+	}
+	c.FanControl = false
+}
+
+// parseFanIndices parses a FAN_INDICES spec into a list of fan indices.
+// Accepts an inclusive range ("0-7") or a comma list ("0,1,2,3"). Indices
+// must be non-negative and < MaxFanIndexProbe.
+func parseFanIndices(spec string) ([]int, error) {
+	spec = strings.TrimSpace(spec)
+	if i := strings.IndexByte(spec, '-'); i > 0 && !strings.Contains(spec, ",") {
+		lo, err1 := strconv.Atoi(strings.TrimSpace(spec[:i]))
+		hi, err2 := strconv.Atoi(strings.TrimSpace(spec[i+1:]))
+		if err1 != nil || err2 != nil {
+			return nil, fmt.Errorf("bad range %q", spec)
+		}
+		if lo < 0 || hi < lo || hi >= ipmi.MaxFanIndexProbe {
+			return nil, fmt.Errorf("range %q out of bounds [0,%d)", spec, ipmi.MaxFanIndexProbe)
+		}
+		out := make([]int, 0, hi-lo+1)
+		for i := lo; i <= hi; i++ {
+			out = append(out, i)
+		}
+		return out, nil
+	}
+	var out []int
+	for _, part := range strings.Split(spec, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("bad index %q", part)
+		}
+		if n < 0 || n >= ipmi.MaxFanIndexProbe {
+			return nil, fmt.Errorf("index %d out of bounds [0,%d)", n, ipmi.MaxFanIndexProbe)
+		}
+		out = append(out, n)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no indices in %q", spec)
+	}
+	return out, nil
 }

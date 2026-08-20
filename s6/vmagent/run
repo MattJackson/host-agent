@@ -149,6 +149,20 @@ NODE_RELABEL='      - source_labels: [__name__, chip]
         target_label: class
         replacement: cpu2'
 
+# Only scrape the nvidia-gpu exporter when a GPU is actually present.
+# The exporter's own run script self-disables without nvidia-smi, so on a
+# GPU-less host :9835 never listens — an unconditional scrape job just logs
+# "connection refused" every interval and pushes a nvidia-gpu up=0 series
+# that pollutes the fleet. Gate the job on the same detection the exporter
+# uses so CPU-only boxes carry no GPU scrape config at all.
+NVIDIA_JOB=""
+if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
+  NVIDIA_JOB="
+  - job_name: nvidia-gpu
+    static_configs:
+      - targets: [\"localhost:9835\"]"
+fi
+
 cat > /run/vmagent.yml <<EOF
 global:
   scrape_interval: 15s
@@ -189,10 +203,7 @@ ${IPMI_RELABEL}
     scrape_timeout: 55s
     static_configs:
       - targets: ["localhost:9633"]
-
-  - job_name: nvidia-gpu
-    static_configs:
-      - targets: ["localhost:9835"]
+${NVIDIA_JOB}
 EOF
 
 # Build auth flags conditionally so an unset env var = no flag (vmagent
