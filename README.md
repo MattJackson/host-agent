@@ -3,6 +3,7 @@
 [![CI](https://github.com/MattJackson/host-agent/actions/workflows/test.yml/badge.svg)](https://github.com/MattJackson/host-agent/actions/workflows/test.yml)
 [![Release](https://img.shields.io/github/v/release/MattJackson/host-agent?display_name=tag&sort=semver)](https://github.com/MattJackson/host-agent/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/MattJackson/host-agent)](https://github.com/MattJackson/host-agent/blob/main/go.mod)
 [![Image](https://img.shields.io/badge/image-ghcr.io%2Fmattjackson%2Fhost--agent-1f6feb?logo=docker)](https://github.com/MattJackson/host-agent/pkgs/container/host-agent)
 
 Single-container, drop-on-any-Linux-host bundle that does two things at once: replaces Dell PowerEdge stock fan curves with a per-class adaptive PID, and ships a full per-host Prometheus exporter stack (`node_exporter`, `cadvisor`, `ipmi_exporter`, `smartctl_exporter`, `nvidia_gpu_exporter`, `vmagent`) in the same image. Each sub-service probes its hardware on start and self-disables if absent, so the *same image* runs on a Dell R730xd with a Tesla GPU, an Unraid box on consumer hardware, and a plain Debian VM with nothing exotic attached. Set two env vars (image, Prometheus URL) and it runs.
