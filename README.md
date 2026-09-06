@@ -51,6 +51,9 @@ Single-container, drop-on-any-Linux-host bundle that does two things at once: re
 - [Architecture rationale](#architecture-rationale)
 - [Operational](#operational)
 - [Development](#development)
+- [Contributing](#contributing)
+- [Security](#security)
+- [Changelog](#changelog)
 - [License](#license)
 
 ## Quick start
@@ -527,6 +530,18 @@ docker build -t host-agent:dev .
 ```
 
 The fan controller is pure Go with zero external dependencies — the build is reproducible, the binary is ~2.4 MB, all logic is unit-testable as functions of inputs.
+
+## Contributing
+
+Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup, scope, and the "adding a chassis profile" walkthrough, and please review our [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). CI (`go test ./...` plus the container build) runs on every push and pull request, so run the tests locally before opening a PR.
+
+## Security
+
+Found a vulnerability? Please report it privately — see [SECURITY.md](SECURITY.md) for the disclosure process. Don't open a public issue for security reports.
+
+## Changelog
+
+Release history and notable changes are tracked in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
