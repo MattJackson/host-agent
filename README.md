@@ -3,6 +3,7 @@
 [![CI](https://github.com/MattJackson/host-agent/actions/workflows/test.yml/badge.svg)](https://github.com/MattJackson/host-agent/actions/workflows/test.yml)
 [![Release](https://img.shields.io/github/v/release/MattJackson/host-agent?display_name=tag&sort=semver)](https://github.com/MattJackson/host-agent/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/MattJackson/host-agent)](https://github.com/MattJackson/host-agent/blob/main/go.mod)
 [![Image](https://img.shields.io/badge/image-ghcr.io%2Fmattjackson%2Fhost--agent-1f6feb?logo=docker)](https://github.com/MattJackson/host-agent/pkgs/container/host-agent)
 
 Single-container, drop-on-any-Linux-host bundle that does two things at once: replaces Dell PowerEdge stock fan curves with a per-class adaptive PID, and ships a full per-host Prometheus exporter stack (`node_exporter`, `cadvisor`, `ipmi_exporter`, `smartctl_exporter`, `nvidia_gpu_exporter`, `vmagent`) in the same image. Each sub-service probes its hardware on start and self-disables if absent, so the *same image* runs on a Dell R730xd with a Tesla GPU, an Unraid box on consumer hardware, and a plain Debian VM with nothing exotic attached. Set two env vars (image, Prometheus URL) and it runs.
@@ -51,6 +52,9 @@ Single-container, drop-on-any-Linux-host bundle that does two things at once: re
 - [Architecture rationale](#architecture-rationale)
 - [Operational](#operational)
 - [Development](#development)
+- [Contributing](#contributing)
+- [Security](#security)
+- [Changelog](#changelog)
 - [License](#license)
 
 ## Quick start
@@ -527,6 +531,18 @@ docker build -t host-agent:dev .
 ```
 
 The fan controller is pure Go with zero external dependencies — the build is reproducible, the binary is ~2.4 MB, all logic is unit-testable as functions of inputs.
+
+## Contributing
+
+Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup, scope, and the "adding a chassis profile" walkthrough, and please review our [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). CI (`go test ./...` plus the container build) runs on every push and pull request, so run the tests locally before opening a PR.
+
+## Security
+
+Found a vulnerability? Please report it privately — see [SECURITY.md](SECURITY.md) for the disclosure process. Don't open a public issue for security reports.
+
+## Changelog
+
+Release history and notable changes are tracked in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
