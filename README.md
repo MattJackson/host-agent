@@ -1,5 +1,7 @@
 # host-agent
 
+[![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-ea4aaa?logo=github-sponsors)](https://github.com/sponsors/MattJackson)
+
 [![CI](https://github.com/MattJackson/host-agent/actions/workflows/test.yml/badge.svg)](https://github.com/MattJackson/host-agent/actions/workflows/test.yml)
 [![Release](https://img.shields.io/github/v/release/MattJackson/host-agent?display_name=tag&sort=semver)](https://github.com/MattJackson/host-agent/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
