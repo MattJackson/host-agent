@@ -21,8 +21,15 @@ type ScanPoint struct {
 // uninformative: <2 distinct fan levels, or no usable cooling relationship
 // (b >= 0, e.g. an idle class whose temp never moved with fan). The fallback is
 // safe — the continuous learner trims from there.
-func FitComfort(points []ScanPoint, target, emergency, minFan, maxFan, floorComfort, fallbackMargin int) int {
-	hiComfort := emergency - 1
+//
+// The result (fit or fallback) never exceeds emergency - minSpan, so the curve's
+// ramp is always at least minSpan °C wide (envelope.MinCurveSpan). minSpan < 1 is
+// treated as 1 (the pre-v0.7.2 emergency-1 ceiling).
+func FitComfort(points []ScanPoint, target, emergency, minFan, maxFan, floorComfort, fallbackMargin, minSpan int) int {
+	if minSpan < 1 {
+		minSpan = 1
+	}
+	hiComfort := emergency - minSpan
 	fallback := clampInt(target-fallbackMargin, floorComfort, hiComfort)
 
 	// Need at least two distinct fan levels to fit a slope.

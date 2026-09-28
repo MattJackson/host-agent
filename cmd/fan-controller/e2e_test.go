@@ -65,15 +65,14 @@ func TestEndToEnd_ThreeCyclesMatchesGolden(t *testing.T) {
 		t.Fatalf("config.Load: %v", err)
 	}
 
-	// Three cycles of escalating CPU temp — 55°C, 65°C, 72°C.
-	// 55: error=-15, |error|>3 (deadband) → step = -15*0.5 = -7.5 → -8.
-	//     cand = 20 + -8 = 12 → clamp 20. Floor=0 (CPU at 55, emerg=80,
-	//     window=10, outer edge=70, 55<70).
-	// 65: error=-5, |error|>3 → step = -5*.5 + (65-55)*1 = -2.5+10 = 7.5 → 8.
-	//     cand = 20+8 = 28. Floor still 0.
-	// 72: error=+2, |error|<=3 → inside deadband → HOLD: cand = 28.
-	//     CPU_PF at 72: diff=72-70=2, f=20+(2/10)*80=36. max(28,36)=36 →
-	//     proximity floor binds (source cpu_pf), setpoint=36.
+	// Three cycles of escalating CPU temp — 55°C, 65°C, 72°C — through the
+	// default profile (CPU comfort 60, emergency 80, fan 20..100 → 4%/°C). The
+	// curve reads the EWMA-smoothed temp; the test clock is frozen, so every
+	// cycle uses the nominal dt = INTERVAL 15s → alpha = 1-e^-0.25 = 0.2212.
+	//  55: smooth seeds 55.000 → at/below comfort → 20.
+	//  65: smooth 55 + 0.2212*10     = 57.212 → 20.
+	//  72: smooth 57.212 + 0.2212*14.788 = 60.483 → 20 + 0.483*4 = 21.9 → 22.
+	// Setpoint 22 (source cpu); rises are never slew-limited.
 	reader := &stubReader{
 		readings: []sensors.Reading{
 			{CPUMax: 55, Details: "P0.t1:55 "},

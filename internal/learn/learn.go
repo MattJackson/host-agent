@@ -51,7 +51,9 @@ type Params struct {
 	// trip is the backstop). p90 (not mean) per the v0.3.9 dip-robustness lesson.
 	SatFanP90 float64
 	// MinRampStart / MaxRampStart: hard clamp on the learned ramp-start. Keeps
-	// the curve within the safe envelope (typically MinSafe .. Emergency-1).
+	// the curve within the safe envelope: floor .. emergency - MinCurveSpan
+	// (envelope.MaxRampStart), so the ramp never narrows below the class's
+	// minimum span however hot the idle plant sits.
 	MinRampStart int
 	MaxRampStart int
 	// MinFanFloor: the curve's MIN_FAN %, i.e. the fan demand at/below comfort.

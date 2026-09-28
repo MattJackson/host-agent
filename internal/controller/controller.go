@@ -16,6 +16,7 @@ import (
 
 	"github.com/pq/docker-server/host-agent/internal/config"
 	"github.com/pq/docker-server/host-agent/internal/control"
+	"github.com/pq/docker-server/host-agent/internal/envelope"
 	"github.com/pq/docker-server/host-agent/internal/ipmi"
 	"github.com/pq/docker-server/host-agent/internal/metrics"
 	"github.com/pq/docker-server/host-agent/internal/sensors"
@@ -35,6 +36,21 @@ type TempReader interface {
 type Logger interface {
 	Printf(format string, v ...any)
 }
+
+// CurveSmoothTauSec is the time constant of the EWMA applied to each class's
+// temperature before it reaches the fan curve. The CPU input is the single
+// hottest core, which jitters ±2°C cycle to cycle; fed raw into a proportional
+// curve that is pure fan noise. 60s is ~4 cycles at the default 15s interval —
+// long enough to average that jitter away, short against the minutes-scale
+// thermal response of the heatsinks, and the raw-max emergency check (which is
+// NOT smoothed) remains the fast safety path.
+const CurveSmoothTauSec = 60.0
+
+// SlewDownPctPerSec limits how fast the chassis setpoint may FALL: 0.2%/s is 3%
+// per 15s cycle, ~7.5 min from 100% to a 10% floor. Increases are never
+// limited. Together with the smoothing this turns residual noise into a setpoint
+// that steps up promptly and eases down, instead of pulsing the fans.
+const SlewDownPctPerSec = 0.2
 
 // Controller holds all the persistent state and per-cycle dependencies.
 type Controller struct {
@@ -89,6 +105,21 @@ type Controller struct {
 	LastPGDemand  int
 	LastHDDDemand int
 	LastSSDDemand int
+
+	// Per-class EWMA-smoothed temperature fed to the curve (0 = unseeded; the
+	// first reading seeds it, and a class that drops out is reset). Updated on
+	// every successful read, emergency cycles included, so the curve resumes
+	// from a current value when an emergency clears. Only the curve reads
+	// these — emergency detection and the observer/learner use raw temps.
+	SmoothCPUTemp float64
+	SmoothPGTemp  float64
+	SmoothHDDTemp float64
+	SmoothSSDTemp float64
+
+	// lastReadAt is when the previous successful read happened; the gap to the
+	// current one is the dt for the smoothing and the down-slew limit (cycles
+	// run 3–27s apart, so neither can be per-cycle).
+	lastReadAt time.Time
 
 	// Persist cadence.
 	PersistInterval time.Duration
@@ -227,7 +258,27 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 	}
 
 	cfg := c.Cfg
-	// Emergency check: any class >= its emergency threshold.
+
+	// Elapsed time since the previous successful read drives both the EWMA and
+	// the down-slew. First cycle (or a clock that didn't advance / went back):
+	// assume one nominal interval.
+	now := c.Now()
+	dt := now.Sub(c.lastReadAt).Seconds()
+	if c.lastReadAt.IsZero() || dt <= 0 {
+		dt = float64(cfg.IntervalSec)
+		if dt <= 0 {
+			dt = 15
+		}
+	}
+	c.lastReadAt = now
+	smoothTemp(&c.SmoothCPUTemp, reading.CPUMax, dt)
+	smoothTemp(&c.SmoothPGTemp, reading.PassiveGPUMax, dt)
+	smoothTemp(&c.SmoothHDDTemp, reading.HDDMax, dt)
+	smoothTemp(&c.SmoothSSDTemp, reading.SSDMax, dt)
+
+	// Emergency check: any class >= its emergency threshold. Deliberately on
+	// the RAW per-class max, never the smoothed value — the smoothing would
+	// delay a genuine trip by up to a time constant.
 	if reading.CPUMax >= cfg.CPUEmergency ||
 		reading.PassiveGPUMax >= cfg.GPUEmergency ||
 		reading.ActiveGPUMax >= cfg.ActiveGPUEmergency ||
@@ -254,9 +305,8 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 	}
 
 	// Exiting emergency: clear the flag and let the curve below recompute the
-	// fan. The v3 curve is memoryless — a pure function of the current
-	// temperature — so once temps drop back under emergency it lands on the
-	// correct setpoint on this very cycle; no special exit-speed handoff needed.
+	// fan demand. The setpoint then eases down from 100% under the down-slew
+	// limit rather than dropping to the curve in one cycle.
 	if c.InEmergency {
 		c.Log.Printf("Emergency cleared — resuming curve control")
 		c.InEmergency = false
@@ -269,10 +319,16 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 	// integrator, so it cannot wind up or hunt regardless of plant speed.
 	// max() across classes drives the chassis, plus the active-GPU own-fan
 	// assist. See docs/fan-controller-v3-design.md.
-	cpuCurve := control.Curve(reading.CPUMax, cfg.CPUComfort, cfg.CPUEmergency, cfg.MinFan, cfg.MaxFan)
-	pgCurve := control.Curve(reading.PassiveGPUMax, cfg.GPUComfort, cfg.GPUEmergency, cfg.MinFan, cfg.MaxFan)
-	hddCurve := control.Curve(reading.HDDMax, cfg.HDDComfort, cfg.HDDEmergency, cfg.MinFan, cfg.MaxFan)
-	ssdCurve := control.Curve(reading.SSDMax, cfg.SSDComfort, cfg.SSDEmergency, cfg.MinFan, cfg.MaxFan)
+	//
+	// Input is the per-class SMOOTHED temperature (see CurveSmoothTauSec), and
+	// comfort is capped at emergency - MinCurveSpan so the ramp can never be
+	// narrower than the class's minimum span (startup already clamps cfg; this
+	// is the point-of-use backstop).
+	caps := comfortCaps(cfg)
+	cpuCurve := control.CurveF(c.SmoothCPUTemp, min(cfg.CPUComfort, caps[0]), cfg.CPUEmergency, cfg.MinFan, cfg.MaxFan)
+	pgCurve := control.CurveF(c.SmoothPGTemp, min(cfg.GPUComfort, caps[1]), cfg.GPUEmergency, cfg.MinFan, cfg.MaxFan)
+	hddCurve := control.CurveF(c.SmoothHDDTemp, min(cfg.HDDComfort, caps[2]), cfg.HDDEmergency, cfg.MinFan, cfg.MaxFan)
+	ssdCurve := control.CurveF(c.SmoothSSDTemp, min(cfg.SSDComfort, caps[3]), cfg.SSDEmergency, cfg.MinFan, cfg.MaxFan)
 
 	// Active-GPU assist: chassis-floor lift driven by the card's OWN fan speed,
 	// not its die temperature — the card's own fan is the authoritative signal
@@ -297,7 +353,14 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 		cfg.MinFan, cfg.MaxFan,
 	)
 
-	c.CurrentSpeed = r.NewSpeed
+	// Asymmetric slew on the final setpoint: rises apply now, falls are
+	// rate-limited. When the limit is what's holding the fan up, report the
+	// binding source as "slew" so the log/metric don't blame a class curve.
+	demand := r.NewSpeed
+	c.CurrentSpeed = clampInt(control.SlewDown(c.CurrentSpeed, demand, dt, SlewDownPctPerSec), cfg.MinFan, cfg.MaxFan)
+	if c.CurrentSpeed > demand {
+		r.Source = "slew"
+	}
 	// Re-issue SetFan every cycle, not only on change. The BMC's
 	// revert-to-auto watchdog tracks the fan-PWM command specifically;
 	// a steady-state cycle that skips SetFan lets manual control lapse
@@ -305,11 +368,12 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 	c.setFan(ctx, c.CurrentSpeed)
 
 	// Log line.
-	c.Log.Printf("%scpu:%d p_gpu:%d a_gpu:%d hdd:%d ssd:%d | curve c%d/p%d/h%d/s%d ag_assist:%d → %d%%(%s)",
+	c.Log.Printf("%scpu:%d p_gpu:%d a_gpu:%d hdd:%d ssd:%d | curve c%d/p%d/h%d/s%d ag_assist:%d → %d%%(%s) | smooth c%.1f/p%.1f/h%.1f/s%.1f demand %d%%",
 		reading.Details,
 		reading.CPUMax, reading.PassiveGPUMax, reading.ActiveGPUMax, reading.HDDMax, reading.SSDMax,
 		cpuCurve, pgCurve, hddCurve, ssdCurve,
-		agAssist, c.CurrentSpeed, r.Source)
+		agAssist, c.CurrentSpeed, r.Source,
+		c.SmoothCPUTemp, c.SmoothPGTemp, c.SmoothHDDTemp, c.SmoothSSDTemp, demand)
 
 	// EWMA + samples.
 	c.BaseSpeed = control.Ewma(c.BaseSpeed, float64(c.CurrentSpeed), cfg.AdaptAlpha)
@@ -338,7 +402,6 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 	}
 
 	// Persist + metrics.
-	now := c.Now()
 	if now.Sub(c.LastPersist) >= c.PersistInterval {
 		if err := c.PersistState(); err != nil {
 			c.Log.Printf("persist failed: %v", err)
@@ -372,20 +435,54 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 		// The per-class "candidate" metric now carries the curve output. The
 		// legacy proximity-floor (PF) fields are retired in v3 (the curve IS the
 		// floor); kept at 0 for metric-schema stability.
-		CPUCand:  cpuCurve,
-		PGCand:   pgCurve,
-		HDDCand:  hddCurve,
-		SSDCand:  ssdCurve,
-		CPUPF:    0,
-		PGPF:     0,
-		AGPF:     0,
-		HDDPF:    0,
-		SSDPF:    0,
-		AGAssist: agAssist,
-		Source:   r.Source,
+		CPUCand:   cpuCurve,
+		PGCand:    pgCurve,
+		HDDCand:   hddCurve,
+		SSDCand:   ssdCurve,
+		CPUPF:     0,
+		PGPF:      0,
+		AGPF:      0,
+		HDDPF:     0,
+		SSDPF:     0,
+		AGAssist:  agAssist,
+		Source:    r.Source,
+		FanDemand: demand,
 	}
+	c.fillSmoothing(&snap)
 	_ = metrics.WriteAtomic(c.MetricsPath, snap)
 	return snap
+}
+
+// smoothTemp advances one class's curve-input EWMA. raw <= 0 (class absent this
+// cycle) resets it, so a class that returns later re-seeds from its first real
+// reading instead of blending with a stale value.
+func smoothTemp(s *float64, raw int, dtSec float64) {
+	switch {
+	case raw <= 0:
+		*s = 0
+	case *s <= 0:
+		*s = float64(raw)
+	default:
+		*s = control.EwmaDt(*s, float64(raw), dtSec, CurveSmoothTauSec)
+	}
+}
+
+// comfortCaps returns the per-class highest allowed comfort (cpu, passive_gpu,
+// hdd, ssd): emergency - envelope.MinCurveSpan.
+func comfortCaps(cfg *config.Config) [4]int {
+	return [4]int{
+		envelope.MaxRampStart(envelope.CPU, cfg.CPUEmergency),
+		envelope.MaxRampStart(envelope.PassiveGPU, cfg.GPUEmergency),
+		envelope.MaxRampStart(envelope.HDD, cfg.HDDEmergency),
+		envelope.MaxRampStart(envelope.SSD, cfg.SSDEmergency),
+	}
+}
+
+// fillSmoothing copies the smoothed temps + comfort caps into a snapshot.
+func (c *Controller) fillSmoothing(snap *metrics.Snapshot) {
+	caps := comfortCaps(c.Cfg)
+	snap.CPUSmooth, snap.PGSmooth, snap.HDDSmooth, snap.SSDSmooth = c.SmoothCPUTemp, c.SmoothPGTemp, c.SmoothHDDTemp, c.SmoothSSDTemp
+	snap.CPUComfortCap, snap.PGComfortCap, snap.HDDComfortCap, snap.SSDComfortCap = caps[0], caps[1], caps[2], caps[3]
 }
 
 // snapshotEmergency builds a Snapshot with the PID/floor fields zeroed.
@@ -393,7 +490,7 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 // reflects the actual short-circuited state.
 func (c *Controller) snapshotEmergency(reading sensors.Reading, source string) metrics.Snapshot {
 	cfg := c.Cfg
-	return metrics.Snapshot{
+	snap := metrics.Snapshot{
 		CurrentSpeed:             c.CurrentSpeed,
 		BaseSpeed:                c.BaseSpeed,
 		Samples:                  c.Samples,
@@ -415,8 +512,11 @@ func (c *Controller) snapshotEmergency(reading sensors.Reading, source string) m
 		ActiveGPUOwnFanThreshold: cfg.ActiveGPUOwnFanThreshold,
 		HDDEmergency:             cfg.HDDEmergency,
 		SSDEmergency:             cfg.SSDEmergency,
+		FanDemand:                c.CurrentSpeed,
 		Source:                   source,
 	}
+	c.fillSmoothing(&snap)
+	return snap
 }
 
 func clampInt(v, lo, hi int) int {

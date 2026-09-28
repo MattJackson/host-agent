@@ -440,3 +440,100 @@ func TestMaxWins_ClampsToFanRange(t *testing.T) {
 		t.Errorf("above MaxFan: got %d want 100", r.NewSpeed)
 	}
 }
+
+// TestCurveF_MatchesCurveOnIntegers guards that routing Curve through CurveF
+// changed nothing for whole-degree inputs, and that fractional inputs land
+// between the neighbouring integer outputs.
+func TestCurveF_MatchesCurveOnIntegers(t *testing.T) {
+	for temp := -1; temp <= 95; temp++ {
+		for _, ce := range [][2]int{{60, 80}, {70, 80}, {76, 80}, {80, 80}, {85, 80}} {
+			want := 0
+			if temp > 0 {
+				want = ProximityFloor(temp, ce[1], ce[1]-ce[0], 10, 100)
+			}
+			if got := CurveF(float64(temp), ce[0], ce[1], 10, 100); got != want {
+				t.Fatalf("CurveF(%d,%d,%d) = %d, want ProximityFloor %d", temp, ce[0], ce[1], got, want)
+			}
+		}
+	}
+	// comfort 70, emergency 80, fan 10..100 → 9%/°C.
+	// 75.5 → 10 + 5.5/10*90 = 59.5 → 60 (half-away).  75.4 → 58.6 → 59.
+	if got := CurveF(75.5, 70, 80, 10, 100); got != 60 {
+		t.Errorf("CurveF(75.5) = %d, want 60", got)
+	}
+	if got := CurveF(75.4, 70, 80, 10, 100); got != 59 {
+		t.Errorf("CurveF(75.4) = %d, want 59", got)
+	}
+}
+
+// TestEwmaDt_TimeAware: alpha = 1 - exp(-dt/tau). prev 70, sample 80, tau 60.
+func TestEwmaDt_TimeAware(t *testing.T) {
+	cases := []struct {
+		name          string
+		dt, tau, want float64
+	}{
+		// 1-e^-0.05 = 0.048771 → 70 + 0.48771 = 70.4877
+		{"3s cycle", 3, 60, 70.4877},
+		// 1-e^-0.25 = 0.221199 → 72.2120
+		{"15s cycle", 15, 60, 72.2120},
+		// 1-e^-0.45 = 0.362372 → 73.6237
+		{"27s cycle", 27, 60, 73.6237},
+		// 1-e^-1 = 0.632121 → 76.3212 (one time constant ≈ 63%)
+		{"one tau", 60, 60, 76.3212},
+		{"dt 0 holds", 0, 60, 70},
+		{"negative dt holds", -5, 60, 70},
+		{"tau 0 passes through", 15, 0, 80},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := EwmaDt(70, 80, c.dt, c.tau); math.Abs(got-c.want) > 1e-4 {
+				t.Errorf("EwmaDt(70,80,dt=%v,tau=%v) = %.4f, want %.4f", c.dt, c.tau, got, c.want)
+			}
+		})
+	}
+	// dt-awareness: the SAME elapsed time must give the same result however it
+	// is sliced. (1-a15)^2 = e^-0.5 = 1-a30, so two 15s steps == one 30s step
+	// == ten 3s steps: 70 + 10*(1-e^-0.5) = 73.9347.
+	two15 := EwmaDt(EwmaDt(70, 80, 15, 60), 80, 15, 60)
+	one30 := EwmaDt(70, 80, 30, 60)
+	ten3 := 70.0
+	for i := 0; i < 10; i++ {
+		ten3 = EwmaDt(ten3, 80, 3, 60)
+	}
+	for name, v := range map[string]float64{"2x15s": two15, "1x30s": one30, "10x3s": ten3} {
+		if math.Abs(v-73.9347) > 1e-4 {
+			t.Errorf("%s = %.4f, want 73.9347 (time-invariant)", name, v)
+		}
+	}
+}
+
+// TestSlewDown: rises immediate, falls limited to round(rate*dt), min 1.
+func TestSlewDown(t *testing.T) {
+	cases := []struct {
+		name       string
+		prev, want int
+		dt, rate   float64
+		expect     int
+	}{
+		{"rise is immediate", 20, 90, 15, 0.2, 90},
+		{"hold is a no-op", 50, 50, 15, 0.2, 50},
+		// 0.2*15 = 3 → 100-3
+		{"fall limited 15s", 100, 10, 15, 0.2, 97},
+		// 0.2*27 = 5.4 → 5
+		{"fall limited 27s", 100, 10, 27, 0.2, 95},
+		// 0.2*3 = 0.6 → round 1
+		{"fall limited 3s (min progress)", 100, 10, 3, 0.2, 99},
+		// 0.2*1 = 0.2 → round 0 → floored to 1
+		{"fall floor of 1%", 100, 10, 1, 0.2, 99},
+		// gap 2 <= max drop 3 → land exactly on demand
+		{"small fall lands on demand", 52, 50, 15, 0.2, 50},
+		{"rate 0 disables limit", 100, 10, 15, 0, 10},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := SlewDown(c.prev, c.want, c.dt, c.rate); got != c.expect {
+				t.Errorf("SlewDown(%d,%d,%v,%v) = %d, want %d", c.prev, c.want, c.dt, c.rate, got, c.expect)
+			}
+		})
+	}
+}

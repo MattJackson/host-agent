@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/pq/docker-server/host-agent/internal/config"
 	"github.com/pq/docker-server/host-agent/internal/ipmi"
+	"github.com/pq/docker-server/host-agent/internal/metrics"
 	"github.com/pq/docker-server/host-agent/internal/runner"
 	"github.com/pq/docker-server/host-agent/internal/sensors"
 	"github.com/pq/docker-server/host-agent/internal/state"
@@ -318,45 +320,157 @@ func TestCycle_ExitEmergencyHoldsAboveBaseline(t *testing.T) {
 	}
 }
 
-// TestCycle_PostEmergency_CurveResumesCleanly verifies the v3 memoryless
-// property across an emergency: because the curve is a pure function of the
-// current temperature, the first cycle after an emergency lands directly on
-// the correct setpoint (no D-term spike, no carried-over state), and a
-// subsequent identical reading yields an *identical* setpoint (perfect settle).
-func TestCycle_PostEmergency_CurveResumesCleanly(t *testing.T) {
+// stepCycle advances the controller's clock by dt and runs one Cycle, so the
+// cycle sees exactly dt since the previous one (Now may be called more than once
+// per cycle, e.g. by PersistState, so the clock must not tick per call).
+func stepCycle(c *Controller, clock *time.Time, dt time.Duration) metrics.Snapshot {
+	*clock = clock.Add(dt)
+	return c.Cycle(context.Background())
+}
+
+// manualClock points c.Now at a clock the test advances via stepCycle.
+func manualClock(c *Controller) *time.Time {
+	clock := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	c.Now = func() time.Time { return clock }
+	return &clock
+}
+
+// TestCycle_PostEmergency_RampsDownUnderSlew: emergency is still an immediate
+// 100%, but when it clears the setpoint eases down at the slew limit instead of
+// dropping straight to the curve, then settles exactly on the curve.
+//
+// default profile: CPU comfort 60, emergency 80, fan 20..100 → 4%/°C.
+// dt = 15s → EWMA alpha = 1-e^-0.25 = 0.2212; slew = 0.2%/s*15 = 3%/cycle.
+func TestCycle_PostEmergency_RampsDownUnderSlew(t *testing.T) {
 	cfg := defaultCfg(t)
-	reader := &stubReader{
-		readings: []sensors.Reading{
-			{CPUMax: 68}, // cycle 1: normal
-			{CPUMax: 85}, // cycle 2: emergency (>= 80)
-			{CPUMax: 72}, // cycle 3: exit — curve(72) governs immediately
-			{CPUMax: 72}, // cycle 4: identical temp → identical setpoint
-		},
-		oks: []bool{true, true, true, true},
+	readings := []sensors.Reading{
+		{CPUMax: 68}, // 1: smooth seeds 68 → curve 20+8*4 = 52; rise from 20 is immediate
+		{CPUMax: 85}, // 2: RAW 85 >= 80 → emergency 100 (smooth 68+0.2212*17 = 71.76)
 	}
-	c := newTestController(t, cfg, reader)
+	for i := 0; i < 14; i++ {
+		readings = append(readings, sensors.Reading{CPUMax: 72})
+	}
+	oks := make([]bool, len(readings))
+	for i := range oks {
+		oks[i] = true
+	}
+	c := newTestController(t, cfg, &stubReader{readings: readings, oks: oks})
+	clk := manualClock(c)
 	c.CurrentSpeed = cfg.MinFan
-	c.BaseSpeed = 25.0
 
-	_ = c.Cycle(context.Background()) // normal
-	_ = c.Cycle(context.Background()) // emergency
-	if !c.InEmergency {
-		t.Fatal("cycle 2 should be emergency")
+	if s := stepCycle(c, clk, 15*time.Second); s.CurrentSpeed != 52 {
+		t.Fatalf("cycle 1: got %d want 52 (rise not slew-limited)", s.CurrentSpeed)
 	}
-	snap3 := c.Cycle(context.Background()) // exit
-	if c.InEmergency {
-		t.Fatal("cycle 3 should have cleared emergency")
+	if s := stepCycle(c, clk, 15*time.Second); s.CurrentSpeed != 100 || s.InEmergency != 1 {
+		t.Fatalf("cycle 2: got %d emerg=%d, want 100/1 (emergency bypasses slew)", s.CurrentSpeed, s.InEmergency)
 	}
-	snap4 := c.Cycle(context.Background()) // flat temp
+	// Cycles 3..: smooth 71.76→71.81→… (curve ≈ 67→68). Setpoint 97, 94, …, 70
+	// (10 steps of 3), then 67 < demand 68 → lands on demand 68 and holds.
+	want := []int{97, 94, 91, 88, 85, 82, 79, 76, 73, 70, 68, 68, 68, 68}
+	for i, w := range want {
+		s := stepCycle(c, clk, 15*time.Second)
+		if s.CurrentSpeed != w {
+			t.Fatalf("cycle %d: got %d want %d (demand %d)", i+3, s.CurrentSpeed, w, s.FanDemand)
+		}
+		if i == 0 && s.Source != "slew" {
+			t.Errorf("cycle 3: source %q, want slew (setpoint held above demand)", s.Source)
+		}
+	}
+}
 
-	// CPU 72 with comfort 60 / emergency 80 → curve = 20 + (12/20)*80 = 68.
-	if snap3.CurrentSpeed != 68 {
-		t.Errorf("post-emergency exit: got %d want curve(72)=68", snap3.CurrentSpeed)
+// TestCycle_EmergencyUsesRawNotSmoothed: a jump from 70 to 80 trips emergency
+// on the raw max even though the smoothed value is only 72.2.
+func TestCycle_EmergencyUsesRawNotSmoothed(t *testing.T) {
+	cfg := defaultCfg(t)
+	c := newTestController(t, cfg, &stubReader{
+		readings: []sensors.Reading{{CPUMax: 70}, {CPUMax: 80}},
+		oks:      []bool{true, true},
+	})
+	clk := manualClock(c)
+	c.CurrentSpeed = cfg.MinFan
+	_ = stepCycle(c, clk, 15*time.Second)
+	s := stepCycle(c, clk, 15*time.Second)
+	// smooth = 70 + 0.2212*10 = 72.21 — far below 80, yet raw 80 must trip.
+	if s.InEmergency != 1 || s.CurrentSpeed != 100 {
+		t.Fatalf("raw 80 must trip emergency: emerg=%d speed=%d", s.InEmergency, s.CurrentSpeed)
 	}
-	// Memoryless: identical reading ⇒ identical setpoint, exactly. No drift.
-	if snap4.CurrentSpeed != snap3.CurrentSpeed {
-		t.Errorf("memoryless curve should give identical setpoint on identical temp: cycle3=%d cycle4=%d",
-			snap3.CurrentSpeed, snap4.CurrentSpeed)
+	if math.Abs(s.CPUSmooth-72.212) > 0.01 {
+		t.Errorf("smoothed cpu = %.3f, want 72.212", s.CPUSmooth)
+	}
+}
+
+// TestCycle_SmoothedCurveInput: a one-cycle spike feeds the curve its smoothed
+// value, and the smoothing is dt-aware (a 3s cycle moves it less than a 27s one).
+func TestCycle_SmoothedCurveInput(t *testing.T) {
+	cases := []struct {
+		name       string
+		dt         time.Duration
+		wantSmooth float64
+		wantCurve  int
+	}{
+		// comfort 60 / emergency 80 / fan 20..100 → 4%/°C. Seed 70, spike 76.
+		// 3s:  alpha 1-e^-0.05 = 0.04877 → 70.293 → 20+10.293*4 = 61.17 → 61
+		{"3s", 3 * time.Second, 70.293, 61},
+		// 15s: alpha 0.22120 → 71.327 → 20+11.327*4 = 65.31 → 65
+		{"15s", 15 * time.Second, 71.327, 65},
+		// 27s: alpha 0.36237 → 72.174 → 20+12.174*4 = 68.70 → 69
+		{"27s", 27 * time.Second, 72.174, 69},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := defaultCfg(t)
+			c := newTestController(t, cfg, &stubReader{
+				readings: []sensors.Reading{{CPUMax: 70}, {CPUMax: 76}},
+				oks:      []bool{true, true},
+			})
+			clk := manualClock(c)
+			c.CurrentSpeed = cfg.MinFan
+			_ = stepCycle(c, clk, tc.dt)
+			s := stepCycle(c, clk, tc.dt)
+			if math.Abs(s.CPUSmooth-tc.wantSmooth) > 0.01 {
+				t.Errorf("smoothed = %.3f, want %.3f", s.CPUSmooth, tc.wantSmooth)
+			}
+			// Raw 76 would have given 20+16*4 = 84.
+			if s.CPUCand != tc.wantCurve {
+				t.Errorf("curve = %d, want %d (smoothed, not raw 84)", s.CPUCand, tc.wantCurve)
+			}
+		})
+	}
+}
+
+// TestCycle_NoisyIdleDoesNotPulse is the regression for the incident: an idle
+// CPU whose hottest core flips 75↔77 every cycle. Comfort 70 (= emergency 80
+// minus the 10°C CPU span), MIN_FAN 10 → 9%/°C.
+//
+// Before: raw curve(75) = 55, curve(77) = 73 → 18% swing every cycle.
+// Now: the alternating ±1°C input settles to a smoothed oscillation of
+// ±a/(2-a) = ±0.124°C around 76 (a = 0.2212): 75.876 → 10+5.876*9 = 62.9 → 63,
+// 76.124 → 65.1 → 65. A 2% swing (the fall 65→63 is within the 3%/cycle slew).
+func TestCycle_NoisyIdleDoesNotPulse(t *testing.T) {
+	cfg := defaultCfg(t)
+	cfg.MinFan = 10
+	cfg.CPUComfort = 70
+	var readings []sensors.Reading
+	for i := 0; i < 80; i++ {
+		readings = append(readings, sensors.Reading{CPUMax: 75 + 2*(i%2)})
+	}
+	oks := make([]bool, len(readings))
+	for i := range oks {
+		oks[i] = true
+	}
+	c := newTestController(t, cfg, &stubReader{readings: readings, oks: oks})
+	clk := manualClock(c)
+	c.CurrentSpeed = cfg.MinFan
+	lo, hi := 101, -1
+	for i := range readings {
+		s := stepCycle(c, clk, 15*time.Second)
+		if i < 40 { // let the EWMA and slew settle
+			continue
+		}
+		lo, hi = min(lo, s.CurrentSpeed), max(hi, s.CurrentSpeed)
+	}
+	if lo != 63 || hi != 65 {
+		t.Errorf("settled setpoint range [%d,%d], want [63,65] (raw curve would swing 55↔73)", lo, hi)
 	}
 }
 

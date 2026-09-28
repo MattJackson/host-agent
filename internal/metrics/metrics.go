@@ -69,8 +69,25 @@ type Snapshot struct {
 
 	// Binding source string — "cpu", "pg", "hdd", "ssd",
 	// "cpu_pf", "pg_pf", "ag_pf", "hdd_pf", "ssd_pf", "ag_assist",
+	// "slew" (the down-slew limit is holding the setpoint above demand),
 	// or "emergency".
 	Source string
+
+	// Max-wins fan demand BEFORE the down-slew limit (== CurrentSpeed unless
+	// the setpoint is still easing down).
+	FanDemand int
+
+	// Per-class EWMA-smoothed temperature fed to the fan curve (0 if absent).
+	CPUSmooth float64
+	PGSmooth  float64
+	HDDSmooth float64
+	SSDSmooth float64
+
+	// Per-class highest allowed curve ramp-start: emergency - min curve span.
+	CPUComfortCap int
+	PGComfortCap  int
+	HDDComfortCap int
+	SSDComfortCap int
 }
 
 // Render returns the bytes of the textfile. The format (and ordering)
@@ -155,6 +172,24 @@ func Render(s Snapshot) []byte {
 	fmt.Fprintf(&b, "# HELP fan_controller_binding_source_info Which source bound the fan decision this cycle (max-wins). 1 for the active source.\n")
 	fmt.Fprintf(&b, "# TYPE fan_controller_binding_source_info gauge\n")
 	fmt.Fprintf(&b, "fan_controller_binding_source_info{source=\"%s\"} 1\n", escapeLabelValue(src))
+	fmt.Fprintf(&b, "\n")
+	fmt.Fprintf(&b, "# HELP fan_controller_fan_demand_percent Max-wins fan demand before the down-slew limit. Equals the setpoint except while a falling setpoint is slew-limited (then below it).\n")
+	fmt.Fprintf(&b, "# TYPE fan_controller_fan_demand_percent gauge\n")
+	fmt.Fprintf(&b, "fan_controller_fan_demand_percent %d\n", s.FanDemand)
+	fmt.Fprintf(&b, "\n")
+	fmt.Fprintf(&b, "# HELP fan_controller_class_smoothed_temp_celsius EWMA-smoothed (60s time constant) class temperature fed to the fan curve. Emergency detection uses the raw max.\n")
+	fmt.Fprintf(&b, "# TYPE fan_controller_class_smoothed_temp_celsius gauge\n")
+	fmt.Fprintf(&b, "fan_controller_class_smoothed_temp_celsius{class=\"cpu\"} %.2f\n", s.CPUSmooth)
+	fmt.Fprintf(&b, "fan_controller_class_smoothed_temp_celsius{class=\"passive_gpu\"} %.2f\n", s.PGSmooth)
+	fmt.Fprintf(&b, "fan_controller_class_smoothed_temp_celsius{class=\"hdd\"} %.2f\n", s.HDDSmooth)
+	fmt.Fprintf(&b, "fan_controller_class_smoothed_temp_celsius{class=\"ssd\"} %.2f\n", s.SSDSmooth)
+	fmt.Fprintf(&b, "\n")
+	fmt.Fprintf(&b, "# HELP fan_controller_class_ramp_start_max_celsius Highest allowed fan-curve ramp-start (comfort) per class: emergency minus the class's minimum curve span.\n")
+	fmt.Fprintf(&b, "# TYPE fan_controller_class_ramp_start_max_celsius gauge\n")
+	fmt.Fprintf(&b, "fan_controller_class_ramp_start_max_celsius{class=\"cpu\"} %d\n", s.CPUComfortCap)
+	fmt.Fprintf(&b, "fan_controller_class_ramp_start_max_celsius{class=\"passive_gpu\"} %d\n", s.PGComfortCap)
+	fmt.Fprintf(&b, "fan_controller_class_ramp_start_max_celsius{class=\"hdd\"} %d\n", s.HDDComfortCap)
+	fmt.Fprintf(&b, "fan_controller_class_ramp_start_max_celsius{class=\"ssd\"} %d\n", s.SSDComfortCap)
 	return b.Bytes()
 }
 

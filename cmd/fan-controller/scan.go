@@ -6,6 +6,7 @@ import (
 
 	"github.com/pq/docker-server/host-agent/internal/config"
 	"github.com/pq/docker-server/host-agent/internal/controller"
+	"github.com/pq/docker-server/host-agent/internal/envelope"
 	"github.com/pq/docker-server/host-agent/internal/ipmi"
 	"github.com/pq/docker-server/host-agent/internal/learn"
 	"github.com/pq/docker-server/host-agent/internal/metrics"
@@ -18,6 +19,7 @@ import (
 func writeScanMetrics(cfg *config.Config, fanLvl int, r sensors.Reading) {
 	_ = metrics.WriteAtomic(metricsFile, metrics.Snapshot{
 		CurrentSpeed:        fanLvl,
+		FanDemand:           fanLvl,
 		InEmergency:         0,
 		CPUMax:              r.CPUMax,
 		PassiveGPUMax:       r.PassiveGPUMax,
@@ -49,6 +51,19 @@ const (
 	scanFallbackMargin = 5 // FitComfort fallback = target - this
 	scanApproachMargin = 3 // stop descending if any class >= emergency - this
 )
+
+// fitScan places one class's comfort from its scan points. The fit is capped at
+// emergency - MinCurveSpan (comfortCap) so a scan of a class that idles near its
+// target can't place a ramp narrower than the class's minimum span.
+func fitScan(logger controller.Logger, cfg *config.Config, name string, class envelope.Class,
+	pts []learn.ScanPoint, target, emerg int, comfort *int) {
+	if len(pts) == 0 || target <= 0 || comfortCap(class, emerg) < learnComfortFloor {
+		return
+	}
+	c := learn.FitComfort(pts, target, emerg, cfg.MinFan, cfg.MaxFan, learnComfortFloor, scanFallbackMargin, envelope.MinCurveSpan(class))
+	logger.Printf("box scan: fit %s → comfort %d°C (target %d, %d points)", name, c, target, len(pts))
+	*comfort = c
+}
 
 // scanWorthwhile reports whether a class with a thermally-significant, slow
 // plant is present — HDD/SSD/passive-GPU. A CPU-only box (fast plant, idle
@@ -153,18 +168,10 @@ func runBoxScan(ctx context.Context, logger controller.Logger, cfg *config.Confi
 		}
 	}
 
-	fit := func(name string, pts []learn.ScanPoint, target, emerg int, comfort *int) {
-		if len(pts) == 0 || target <= 0 || emerg <= learnComfortFloor+1 {
-			return
-		}
-		c := learn.FitComfort(pts, target, emerg, cfg.MinFan, cfg.MaxFan, learnComfortFloor, scanFallbackMargin)
-		logger.Printf("box scan: fit %s → comfort %d°C (target %d, %d points)", name, c, target, len(pts))
-		*comfort = c
-	}
-	fit("cpu", cpu, cfg.CPUTarget, cfg.CPUEmergency, &cfg.CPUComfort)
-	fit("passive_gpu", gpu, cfg.GPUTarget, cfg.GPUEmergency, &cfg.GPUComfort)
-	fit("hdd", hdd, cfg.HDDTarget, cfg.HDDEmergency, &cfg.HDDComfort)
-	fit("ssd", ssd, cfg.SSDTarget, cfg.SSDEmergency, &cfg.SSDComfort)
+	fitScan(logger, cfg, "cpu", envelope.CPU, cpu, cfg.CPUTarget, cfg.CPUEmergency, &cfg.CPUComfort)
+	fitScan(logger, cfg, "passive_gpu", envelope.PassiveGPU, gpu, cfg.GPUTarget, cfg.GPUEmergency, &cfg.GPUComfort)
+	fitScan(logger, cfg, "hdd", envelope.HDD, hdd, cfg.HDDTarget, cfg.HDDEmergency, &cfg.HDDComfort)
+	fitScan(logger, cfg, "ssd", envelope.SSD, ssd, cfg.SSDTarget, cfg.SSDEmergency, &cfg.SSDComfort)
 	logger.Printf("box scan: complete — comfort cpu=%d gpu=%d hdd=%d ssd=%d",
 		cfg.CPUComfort, cfg.GPUComfort, cfg.HDDComfort, cfg.SSDComfort)
 	return true

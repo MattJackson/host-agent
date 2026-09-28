@@ -256,6 +256,9 @@ func main() {
 	// profile default each boot. Returns whether this box has a baseline (has
 	// been scanned) — if not, we run the first-run box scan below.
 	scanned := loadBaseline(learnedStatePath, cfg, logger)
+	// v0.7.2: whatever the comfort's source (profile, env, restored baseline),
+	// hold every class's ramp to its minimum span before the first cycle.
+	enforceCurveSpan(cfg, logger)
 
 	c := controller.New(cfg, ipmiClient, reader, logger, stateFile, metricsFile)
 	c.LoadState()
@@ -268,9 +271,9 @@ func main() {
 	// moment we take the BMC into manual we also disable iDRAC's own thermal
 	// ramp, so engaging at, say, 10% pins the fans low on a hot box until our
 	// first cycle lands. This is the failure that cooked docker-1. So we clamp
-	// the INITIAL engage UP to a safe floor and let cycle 1 (which runs
-	// immediately, below) trim it down to the curve's real demand within one
-	// interval. Principle: always converge toward quiet from the SAFE side.
+	// the INITIAL engage UP to a safe floor and let the cycles (the first runs
+	// immediately, below) ease it down to the curve's real demand under the
+	// down-slew limit. Principle: always converge toward quiet from the SAFE side.
 	startSpeed := c.CurrentSpeed
 	if startSpeed < safeStartFan {
 		logger.Printf("startup failsafe: resumed speed %d%% below safe floor — engaging at %d%% until first cycle verifies the plant", startSpeed, safeStartFan)

@@ -4,7 +4,51 @@ All notable changes to this project are documented here. This project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
-## [Unreleased]
+## [0.7.2] — 2026-09-28
+
+### Fixed — fan pulsing from a collapsed curve ramp (minimum span, smoothing, slew)
+
+On a dual-socket R730xd in `min-noise` mode (CPU target 76, emergency 80) the
+fans pulsed between roughly 4k, 10k and 17k RPM every minute or so at 2% CPU
+load. Nothing was mis-learned: the idle box sat at 75–76°C at MIN_FAN 10%, so
+the learner correctly placed CPU comfort (the curve's ramp-start) at the
+target, 76. But the curve ramps MIN_FAN→100% between comfort and emergency, so
+the ramp was only 4°C wide — ~22%/°C — and its input is the single hottest
+core, sampled every ~15s and noisy by ±2°C. Every degree of noise moved the
+fans by a fifth of their range, and a 2°C blip tripped EMERGENCY. Three
+changes, each closing one part of that:
+
+- **Minimum curve span.** A class's ramp-start may not exceed
+  `emergency − MinCurveSpan` (`envelope.MinCurveSpanC`: CPU 10°C, passive GPU
+  8°C, HDD 6°C, SSD 6°C; previously `emergency − 1`). Enforced everywhere a
+  comfort comes from: the continuous learner's `MaxRampStart`, restored
+  `learned.json` (a value above the cap is now clamped **down** to it, not
+  ignored), the first-run box-scan fit, and configured `*_COMFORT` values at
+  startup. When a mode's TARGET sits within the span of emergency (e.g.
+  min-noise CPU 76 vs emergency 80 → cap 70) the span still wins — the curve
+  starts adding fan below target — and that is logged once at startup. Expect
+  more fan at idle than the pulsing average on such boxes; raising the class's
+  emergency is the lever if that's unwanted.
+- **Smoothed curve input.** Each class's curve now reads an EWMA of its
+  temperature with a 60s time constant, dt-aware (`alpha = 1 − e^(−dt/60)`)
+  because cycle intervals vary 3–27s. EMERGENCY detection still uses the raw,
+  unsmoothed max. The observer/learner still sample the raw temperature: the
+  learner's settle gate is a stddev threshold, and smoothing its input would
+  let an in-flight transient pass as settled.
+- **Asymmetric slew on the setpoint.** Increases apply immediately; decreases
+  are limited to 0.2%/s (3% per 15s cycle, at least 1% per cycle). Emergency
+  still goes straight to 100%, and when it clears the fans ease down under the
+  slew limit instead of dropping to the curve in one cycle. The binding source
+  reads `slew` while the limit is holding the setpoint above demand.
+
+`learnEpoch` is bumped to **4**: comforts learned without the span cap can sit
+at `emergency − 4` and are discarded, so every box re-scans once after
+upgrading.
+
+New metrics: `fan_controller_class_smoothed_temp_celsius{class}`,
+`fan_controller_class_ramp_start_max_celsius{class}` (the span cap), and
+`fan_controller_fan_demand_percent` (max-wins demand before the slew limit).
+The per-cycle log line gains a `| smooth c…/p…/h…/s… demand N%` suffix.
 
 ## [0.7.0] — 2026-08-20
 

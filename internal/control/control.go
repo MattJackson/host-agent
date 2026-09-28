@@ -142,14 +142,77 @@ func StepPID(p PIDParams) int {
 //
 // Because it's a pure function of the current temperature — no integrator, no
 // setpoint, no history — it cannot wind up or hunt regardless of how slow the
-// plant is (see docs/fan-controller-v3-design.md). It is implemented on top of
-// ProximityFloor with the ramp window spanning the whole comfort→emergency
-// range, i.e. window = emergency - comfort.
+// plant is (see docs/fan-controller-v3-design.md). It is ProximityFloor with the
+// ramp window spanning the whole comfort→emergency range (window = emergency -
+// comfort), computed via CurveF.
 func Curve(temp, comfort, emergency, minFan, maxFan int) int {
+	return CurveF(float64(temp), comfort, emergency, minFan, maxFan)
+}
+
+// CurveF is Curve on a fractional temperature — the controller feeds the curve a
+// smoothed (EWMA) temperature, and re-quantizing it to whole °C would put back
+// the 1°C fan steps the smoothing exists to remove. Same law as Curve: temp <= 0
+// abstains, minFan at/below comfort, linear to maxFan at emergency, maxFan
+// at/above emergency; result rounded half-away-from-zero. For whole-degree
+// inputs it is identical to Curve.
+func CurveF(temp float64, comfort, emergency, minFan, maxFan int) int {
 	if temp <= 0 {
 		return 0
 	}
-	return ProximityFloor(temp, emergency, emergency-comfort, minFan, maxFan)
+	window := emergency - comfort
+	if window <= 0 {
+		if temp >= float64(emergency) {
+			return maxFan
+		}
+		return minFan
+	}
+	diff := temp - float64(comfort)
+	if diff <= 0 {
+		return minFan
+	}
+	f := float64(minFan) + (diff/float64(window))*float64(maxFan-minFan)
+	if f > float64(maxFan) {
+		f = float64(maxFan)
+	}
+	return int(math.Floor(f + 0.5))
+}
+
+// EwmaDt is a time-constant EWMA for irregularly spaced samples: the weight
+// given to the new sample is alpha = 1 - exp(-dtSec/tauSec), so the filter's
+// response depends on elapsed TIME, not on how many cycles ran. A fixed per-
+// cycle alpha would smooth 9x harder on a 3s cycle than on a 27s one, and the
+// controller's cycle length varies that much (smartctl polls, slow ipmitool).
+//
+// dtSec <= 0 returns prev unchanged; tauSec <= 0 returns sample (no smoothing).
+func EwmaDt(prev, sample, dtSec, tauSec float64) float64 {
+	if tauSec <= 0 {
+		return sample
+	}
+	if dtSec <= 0 {
+		return prev
+	}
+	alpha := 1 - math.Exp(-dtSec/tauSec)
+	return prev + alpha*(sample-prev)
+}
+
+// SlewDown applies an asymmetric rate limit to the chassis setpoint: increases
+// (want >= prev) pass through immediately — never delay cooling — while
+// decreases are limited to downPctPerSec*dtSec, rounded half-away-from-zero and
+// at least 1% so a short cycle still makes progress. Emergency never routes
+// through here (the caller jumps straight to 100%); the ramp back down after an
+// emergency clears does.
+func SlewDown(prev, want int, dtSec, downPctPerSec float64) int {
+	if want >= prev || downPctPerSec <= 0 {
+		return want
+	}
+	maxDrop := roundHalfAway(downPctPerSec * dtSec)
+	if maxDrop < 1 {
+		maxDrop = 1
+	}
+	if prev-want > maxDrop {
+		return prev - maxDrop
+	}
+	return want
 }
 
 // ProximityFloor computes the per-class proximity-to-emergency floor.

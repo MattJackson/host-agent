@@ -18,8 +18,8 @@ const learnedStatePath = stateDir + "/learned.json"
 
 // learnComfortFloor is the lowest the learner may push a comfort temperature.
 // Below this the curve would ramp fans for a room-temperature class — pointless.
-// The upper bound is per-class emergency-1 so the curve always reaches MaxFan by
-// emergency.
+// The upper bound is per-class emergency - envelope.MinCurveSpan (comfortCap), so
+// the curve's ramp is never narrower than the class's minimum span.
 const learnComfortFloor = 20
 
 // learnEpoch is the learning-state schema/semantics version. BUMP IT whenever the
@@ -38,7 +38,52 @@ const learnComfortFloor = 20
 // kept drifting on multi-class boxes — a class freeloaded another class's high
 // chassis fan and ratcheted up anyway (docker-1 CPU 70→74 while the GPU held
 // 78%). Those comforts are drifted and must be discarded.
-const learnEpoch = 3
+// epoch 4 (v0.7.2): minimum curve span. The ramp-start ceiling moved from
+// emergency-1 to emergency - MinCurveSpan (CPU 10°C). A comfort learned under
+// the old ceiling can legitimately sit at emergency-4 — e.g. an idle CPU that
+// holds its target at MIN_FAN pulls comfort up to target — leaving a 4°C ramp
+// whose ~22%/°C gain turns sensor noise into fans pulsing through their whole
+// range. Clamping such a value down would keep a placement made for a different
+// curve shape, so epoch-3 state is discarded and the box re-scans.
+const learnEpoch = 4
+
+// comfortCap is the highest comfort (ramp-start) a class may use: emergency
+// minus the class's minimum curve span.
+func comfortCap(class envelope.Class, emergency int) int {
+	return envelope.MaxRampStart(class, emergency)
+}
+
+// enforceCurveSpan clamps every class's configured/restored comfort down to its
+// comfortCap and logs, once per class, when that cap sits below the mode TARGET
+// (the target is within MinCurveSpan of emergency). That is expected for the
+// hot-and-quiet modes against a tight emergency: the span still wins, so the
+// curve starts adding fan a few degrees before target rather than hunting over
+// a ramp only a few degrees wide. Called once at startup, after loadBaseline.
+func enforceCurveSpan(cfg *config.Config, logger controller.Logger) {
+	classes := []struct {
+		name    string
+		class   envelope.Class
+		comfort *int
+		target  int
+		emerg   int
+	}{
+		{"cpu", envelope.CPU, &cfg.CPUComfort, cfg.CPUTarget, cfg.CPUEmergency},
+		{"passive_gpu", envelope.PassiveGPU, &cfg.GPUComfort, cfg.GPUTarget, cfg.GPUEmergency},
+		{"hdd", envelope.HDD, &cfg.HDDComfort, cfg.HDDTarget, cfg.HDDEmergency},
+		{"ssd", envelope.SSD, &cfg.SSDComfort, cfg.SSDTarget, cfg.SSDEmergency},
+	}
+	for _, cl := range classes {
+		hi := comfortCap(cl.class, cl.emerg)
+		span := envelope.MinCurveSpan(cl.class)
+		if *cl.comfort > hi {
+			logger.Printf("curve span: %s comfort %d → %d (ramp must span ≥%d°C below emergency %d)", cl.name, *cl.comfort, hi, span, cl.emerg)
+			*cl.comfort = hi
+		}
+		if cl.target > hi {
+			logger.Printf("curve span: %s target %d is within %d°C of emergency %d — ramp-start capped at %d, so fan rises before target is reached", cl.name, cl.target, span, cl.emerg, hi)
+		}
+	}
+}
 
 type baseline struct {
 	Epoch   int  `json:"epoch"`   // learnEpoch at save time; mismatch ⇒ discard + relearn
@@ -71,15 +116,23 @@ func loadBaseline(path string, cfg *config.Config, logger controller.Logger) (sc
 		_ = os.Remove(path)
 		return false
 	}
-	apply := func(v int, dst *int, hi int) {
-		if v >= learnComfortFloor && v <= hi {
-			*dst = v
+	// A restored comfort above the span cap is clamped DOWN to it (not ignored):
+	// the persisted value still says "this class runs cool enough to ramp late",
+	// and the cap is the latest it may ramp. Below the floor stays ignored.
+	apply := func(name string, v int, dst *int, hi int) {
+		if v < learnComfortFloor {
+			return
 		}
+		if v > hi {
+			logger.Printf("learn: restored %s comfort %d above span cap — clamped to %d", name, v, hi)
+			v = hi
+		}
+		*dst = v
 	}
-	apply(bl.CPU, &cfg.CPUComfort, cfg.CPUEmergency-1)
-	apply(bl.GPU, &cfg.GPUComfort, cfg.GPUEmergency-1)
-	apply(bl.HDD, &cfg.HDDComfort, cfg.HDDEmergency-1)
-	apply(bl.SSD, &cfg.SSDComfort, cfg.SSDEmergency-1)
+	apply("cpu", bl.CPU, &cfg.CPUComfort, comfortCap(envelope.CPU, cfg.CPUEmergency))
+	apply("passive_gpu", bl.GPU, &cfg.GPUComfort, comfortCap(envelope.PassiveGPU, cfg.GPUEmergency))
+	apply("hdd", bl.HDD, &cfg.HDDComfort, comfortCap(envelope.HDD, cfg.HDDEmergency))
+	apply("ssd", bl.SSD, &cfg.SSDComfort, comfortCap(envelope.SSD, cfg.SSDEmergency))
 	logger.Printf("learn: restored baseline scanned=%v comfort cpu=%d gpu=%d hdd=%d ssd=%d (from %s)",
 		bl.Scanned, cfg.CPUComfort, cfg.GPUComfort, cfg.HDDComfort, cfg.SSDComfort, path)
 	return bl.Scanned
@@ -125,14 +178,15 @@ func runLearnTick(cfg *config.Config, obs *adaptive.Observer, logger controller.
 	}
 	changed := false
 	for _, cl := range classes {
-		if cl.target <= 0 || cl.emerg <= learnComfortFloor+1 {
+		hi := comfortCap(cl.class, cl.emerg)
+		if cl.target <= 0 || hi < learnComfortFloor {
 			continue
 		}
 		st := obs.Stats(cl.class)
 		if st.TempP50 <= 0 {
 			continue // class absent or no data yet
 		}
-		p := learn.DefaultParams(learnComfortFloor, cl.emerg-1, float64(cfg.MinFan))
+		p := learn.DefaultParams(learnComfortFloor, hi, float64(cfg.MinFan))
 		d := learn.TargetSeek(st.TempP50, st.TempStdDev, st.FanDemandP90, *cl.comfort, cl.target, p)
 		if d.Acted {
 			logger.Printf("learn[%s]: steady=%.1f target=%d stddev=%.2f fanP90=%.0f → %s, comfort %d→%d",
