@@ -4,6 +4,17 @@ All notable changes to this project are documented here. This project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [0.7.5] — 2026-09-28
+
+### Fixed — keep high-churn runtime files in RAM without template changes
+
+The image now mounts `/run/host-agent` as a 256 MB tmpfs before s6 starts.
+This keeps metrics textfiles and vmagent's unsent queue in RAM even when an
+older Docker template does not configure tmpfs. The mount is limited to the
+agent's subtree, preserving Docker and containerd socket mounts elsewhere in
+`/run`. Startup fails with an explicit error if the required tmpfs cannot be
+mounted, instead of silently putting repeated runtime writes on disk.
+
 ## [0.7.4] — 2026-09-28
 
 ### Fixed — enable fan control with legacy Unraid template setting

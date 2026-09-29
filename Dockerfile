@@ -149,9 +149,11 @@ RUN chmod +x /usr/local/bin/fan-controller
 
 # s6 service definitions: one per sub-service, each probes its hardware
 COPY s6/ /etc/s6-overlay/s6-rc.d/
+COPY docker-entrypoint.sh /usr/local/bin/host-agent-entrypoint
+RUN chmod +x /usr/local/bin/host-agent-entrypoint
 
 ENV S6_KEEP_ENV=1 \
     S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
     S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0
 
-ENTRYPOINT ["/init"]
+ENTRYPOINT ["/usr/local/bin/host-agent-entrypoint"]

@@ -46,6 +46,25 @@ jobs:
           context: .
           platforms: linux/amd64
           push: false
+          load: true
           tags: host-agent:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Verify runtime state is tmpfs
+        run: |
+          docker run -d --privileged --name host-agent-smoke \
+            -e PROMETHEUS_REMOTE_WRITE_URL=http://127.0.0.1:9090/api/v1/write \
+            host-agent:ci
+          trap 'docker rm -f host-agent-smoke >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 30); do
+            if docker exec host-agent-smoke awk \
+              '$2 == "/run/host-agent" && $3 == "tmpfs" { found = 1 } END { exit !found }' \
+              /proc/mounts; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs host-agent-smoke
+          echo "host-agent runtime state is not mounted as tmpfs" >&2
+          exit 1
