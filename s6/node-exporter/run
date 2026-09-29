@@ -1,8 +1,51 @@
 #!/usr/bin/env sh
 # Reads fan-controller's textfile output (metrics.prom) from the state dir.
+mkdir -p /run/host-agent/state
+
+# Keep normal filesystem capacity metrics, but never stat a boot/USB
+# filesystem. Mount and sysfs metadata are virtual kernel files; checking
+# them does not read the mounted media.
+EXCLUDED_PATHS='sys|proc|dev|host|etc|boot'
+if [ -r /host/proc/mounts ]; then
+  while read -r source target fstype options rest; do
+    case "$source" in
+      /dev/*) ;;
+      *) continue ;;
+    esac
+    device=${source##*/}
+    sys_path=$(readlink -f "/host/sys/class/block/$device" 2>/dev/null || true)
+    parent=$device
+    case "$sys_path" in
+      *"/block/"*) parent=${sys_path#*"/block/"}; parent=${parent%%/*} ;;
+    esac
+    removable=""
+    if [ -r "/host/sys/class/block/$parent/removable" ]; then
+      removable=$(cat "/host/sys/class/block/$parent/removable" 2>/dev/null || true)
+    fi
+    case "$sys_path" in
+      *"/usb"*|*"/usb/"*) is_usb=1 ;;
+      *) is_usb=0 ;;
+    esac
+    if [ "$removable" = 1 ] || [ "$is_usb" = 1 ]; then
+      # Only append simple mount paths; /boot is already excluded above.
+      case "$target" in
+        *[!a-zA-Z0-9_./-]*) continue ;;
+      esac
+      path_pattern=${target#/}
+      [ "$target" = / ] && path_pattern=""
+      case "|$EXCLUDED_PATHS|" in
+        *"|$path_pattern|"*) ;;
+        *) EXCLUDED_PATHS="$EXCLUDED_PATHS|$path_pattern" ;;
+      esac
+    fi
+done < /host/proc/mounts
+fi
+EXCLUDED_MOUNTS="^/($EXCLUDED_PATHS)($|/)"
+echo "[node-exporter] excluding boot/removable filesystem mounts: $EXCLUDED_MOUNTS"
+
 exec /usr/local/bin/node_exporter \
   --path.rootfs=/host \
   --path.procfs=/host/proc \
   --path.sysfs=/host/sys \
-  --collector.filesystem.mount-points-exclude='^/(sys|proc|dev|host|etc)($|/)' \
-  --collector.textfile.directory=/var/lib/host-agent/state
+  --collector.filesystem.mount-points-exclude="$EXCLUDED_MOUNTS" \
+  --collector.textfile.directory=/run/host-agent/state

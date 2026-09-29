@@ -4,6 +4,22 @@ All notable changes to this project are documented here. This project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [0.7.3] — 2026-09-28
+
+### Fixed — keep runtime metrics and queued samples off the Unraid boot device
+
+- Exporter textfiles and vmagent's unsent remote-write queue now live under
+  `/run` (RAM-backed when using the supplied Docker template/compose config).
+- Host `/boot` and removable-device mounts are excluded from node-exporter's
+  filesystem collector. cAdvisor disk and disk I/O metrics are disabled.
+- SMART discovery identifies and excludes the host boot device before issuing
+  per-device SMART queries.
+- Learned fan state is held in memory and checkpointed to persistent appdata
+  every six hours and during graceful shutdown. The observer no longer writes
+  on each control cycle.
+- Added an explicit controller enabled metric and throttled routine control
+  logs to reduce repeated container log writes.
+
 ## [0.7.2] — 2026-09-28
 
 ### Fixed — fan pulsing from a collapsed curve ramp (minimum span, smoothing, slew)

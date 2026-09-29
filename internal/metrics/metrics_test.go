@@ -53,3 +53,20 @@ func TestRender_SafeSourceUnchanged(t *testing.T) {
 		t.Errorf("safe source 'cpu' should render verbatim:\n%s", out)
 	}
 }
+
+func TestRender_FanControlEnabled(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		enabled bool
+		want    string
+	}{
+		{name: "enabled", enabled: true, want: "fan_controller_control_enabled 1"},
+		{name: "monitor-only", enabled: false, want: "fan_controller_control_enabled 0"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := string(Render(Snapshot{FanControlEnabled: tt.enabled})); !strings.Contains(got, tt.want) {
+				t.Fatalf("Render() missing %q", tt.want)
+			}
+		})
+	}
+}

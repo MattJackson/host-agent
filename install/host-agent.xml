@@ -14,17 +14,9 @@
     smartctl-exporter, ipmi-exporter, nvidia-gpu-exporter, an adaptive
     Dell PowerEdge fan controller, and vmagent.
 
-    SETUP (one-time, via SSH):
-
-      mkdir -p /mnt/user/appdata/host-agent/config
-      echo 'http://your-prometheus:9090/api/v1/write' \
-        > /mnt/user/appdata/host-agent/config/remote_write_url
-
-    vmagent reads the URL from that file. Set it once and it survives
-    every container update, image bump, and template re-curl — because
-    the appdata mount is the persistence boundary. (Optional bearer or
-    basic auth via the PROMETHEUS_REMOTE_WRITE_* env vars below for
-    receivers that need it.)
+    Set PROMETHEUS_REMOTE_WRITE_URL in the template to your receiver's
+    /api/v1/write endpoint. Runtime config is passed through the container
+    environment; host-agent does not read a URL file from persistent storage.
 
     external_labels.host is the box's kernel hostname, so the dashboard
     sees a new host the moment its first push lands — no central
@@ -34,12 +26,21 @@
     (ipmi-exporter without /dev/ipmi0, nvidia-gpu-exporter without
     nvidia-smi, fan controller without a Dell BMC) self-disable. Same
     image runs on Dell, Mac mini, plain Linux + Docker, or Unraid.
+
+    On Unraid Dell systems, the host kernel must load ipmi_si and
+    ipmi_devintf so /dev/ipmi0 exists before this container starts. Add
+    those modprobe commands once to /boot/config/go. SMART discovery excludes
+    the host /boot block device. Removable filesystem mounts are excluded from
+    node-exporter's filesystem collector; cAdvisor disk metrics are disabled. Metrics and
+    vmagent's unsent queue use RAM-backed /run. Learned
+    fan state is checkpointed to appdata at most every six hours and on
+    graceful shutdown.
   </Overview>
   <Category>Tools: Status:Stable</Category>
   <WebUI/>
   <TemplateURL/>
   <Icon>https://raw.githubusercontent.com/prometheus/docs/main/static/prometheus-logo-orange.svg</Icon>
-  <ExtraParams>--restart=unless-stopped --cgroupns=host</ExtraParams>
+  <ExtraParams>--restart=unless-stopped --cgroupns=host --tmpfs /run:rw,nosuid,nodev,size=256m,mode=755</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DateInstalled/>
@@ -47,7 +48,7 @@
   <DonateLink/>
   <Requires/>
 
-  <Config Name="Host filesystem" Target="/host" Default="/" Mode="ro,rslave" Description="Read-only view of the host filesystem. node-exporter reads /host/proc, /host/sys, /host/var/run/docker.sock, /host/var/lib/docker through this single mount — leave the default." Type="Path" Display="advanced-hide" Required="true" Mask="false">/</Config>
+  <Config Name="Host filesystem" Target="/host" Default="/" Mode="ro,rslave" Description="Read-only host view for procfs, sysfs, Unraid metadata, and mount discovery. The filesystem collector excludes /boot and removable USB filesystems." Type="Path" Display="advanced-hide" Required="true" Mask="false">/</Config>
 
   <Config Name="Host sysfs" Target="/sys" Default="/sys" Mode="ro" Description="Direct passthrough of /sys (read-only) so cadvisor can read /sys/fs/cgroup and enumerate Docker containers. --privileged alone is not enough — Docker still gives the container its own cgroup namespace. Leave the default." Type="Path" Display="advanced-hide" Required="true" Mask="false">/sys</Config>
 
@@ -59,7 +60,11 @@
 
   <Config Name="Host devices" Target="/dev" Default="/dev" Mode="rw" Description="Direct passthrough of host /dev. ipmitool and smartctl talk to /dev/ipmi0 and /dev/sd* / /dev/bus/0 directly — Docker doesn't auto-share host devices even with Privileged on. Leave the default." Type="Path" Display="advanced-hide" Required="true" Mask="false">/dev</Config>
 
-  <Config Name="State directory" Target="/var/lib/host-agent" Default="/mnt/user/appdata/host-agent" Mode="rw" Description="Persistent state for the Dell fan controller's EWMA baseline (takes 24–48 h to learn) and the vmagent write-ahead log. Pre-filled; advanced field — no need to touch." Type="Path" Display="advanced-hide" Required="true" Mask="false">/mnt/user/appdata/host-agent</Config>
+  <Config Name="State directory" Target="/var/lib/host-agent" Default="/mnt/user/appdata/host-agent" Mode="rw" Description="Persistent learned controller state. Files are checkpointed at most every six hours and on graceful shutdown. Runtime metrics and the remote-write queue stay in RAM." Type="Path" Display="advanced-hide" Required="true" Mask="false">/mnt/user/appdata/host-agent</Config>
+
+  <Config Name="Fan control" Target="HOST_AGENT_FAN_CONTROL" Default="on" Mode="" Description="Set to off to leave chassis fans under the BMC's automatic policy. Defaults to enabled on supported Dell systems." Type="Variable" Display="advanced" Required="false" Mask="false">on</Config>
+
+  <Config Name="Prometheus remote_write URL" Target="PROMETHEUS_REMOTE_WRITE_URL" Default="" Mode="" Description="Required receiver /api/v1/write endpoint." Type="Variable" Display="always" Required="true" Mask="false"></Config>
 
   <Config Name="Prometheus bearer token" Target="PROMETHEUS_REMOTE_WRITE_BEARER_TOKEN" Default="" Mode="" Description="Optional. Sent as `Authorization: Bearer …` on every remote_write. Use this OR the username/password pair, not both." Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
 

@@ -34,8 +34,10 @@ import (
 var version = "dev"
 
 const (
-	profileDir = "/etc/fan-controller/profiles"
-	stateDir   = "/var/lib/host-agent/state"
+	profileDir              = "/etc/fan-controller/profiles"
+	stateDir                = "/var/lib/host-agent/state"
+	runtimeDir              = "/run/host-agent/state"
+	stateCheckpointInterval = 6 * time.Hour
 	// safeStartFan is the minimum fan % the controller will engage manual mode
 	// at on startup, regardless of the resumed last_speed. Taking the BMC into
 	// manual disables iDRAC's auto ramp, so starting low on a freshly-booted
@@ -43,8 +45,8 @@ const (
 	// interval. Loud-but-safe beats quiet-but-cooking.
 	safeStartFan        = 50
 	stateFile           = "/var/lib/host-agent/state/base"
-	metricsFile         = "/var/lib/host-agent/state/metrics.prom"
-	adaptiveMetricsFile = "/var/lib/host-agent/state/adaptive.prom"
+	metricsFile         = runtimeDir + "/metrics.prom"
+	adaptiveMetricsFile = runtimeDir + "/adaptive.prom"
 )
 
 // stdLogger emits the bash log line format: "YYYY-MM-DD HH:MM:SS - msg".
@@ -99,20 +101,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 2b: Build adaptive observer + restore prior window from disk so
-	// learnings (sample window, inlet baseline) survive container
-	// restart and image upgrade. A 2-hour warmup penalty per restart
-	// would otherwise gate every drift decision.
+	// 2b: Build the rolling observer in memory. Raw 15-second samples are
+	// transient; durable learned targets are checkpointed separately.
 	obs := buildObserver(logger, cfg)
-	observerPath := adaptive.DefaultObserverPath
-	if op := os.Getenv("HOST_AGENT_OBSERVER_PATH"); op != "" {
-		observerPath = op
-	}
-	if loaded, err := obs.LoadFrom(observerPath); err != nil {
-		logger.Printf("adaptive observer: starting cold (load %s: %v)", observerPath, err)
-	} else if loaded {
-		logger.Printf("adaptive observer: restored sample window from %s", observerPath)
-	}
 
 	// 2c: Read env vars for reconciler config.
 	var adaptiveCycleMin int = 10
@@ -185,6 +176,7 @@ func main() {
 			Observer:          obs,
 			Mode:              m,
 			StatePath:         statePath,
+			PersistInterval:   stateCheckpointInterval,
 			WindowSize:        windowSize,
 			PerClassOverrides: perClassOverrides,
 		})
@@ -241,6 +233,14 @@ func main() {
 		logger.Printf("%s", label)
 	}
 	smartctl := sensors.NewSmartctl(r)
+	if excluded, err := sensors.BootDeviceNames("/host/proc/mounts", "/host/sys/class/block"); err != nil {
+		logger.Printf("WARN: cannot inspect host /boot device; SMART boot-media exclusion unavailable: %v", err)
+	} else {
+		smartctl.Excluded = excluded
+		if len(excluded) > 0 {
+			logger.Printf("SMART will skip host boot device names: %v", excluded)
+		}
+	}
 	if label, fatal := smartctl.Probe(ctx, cfg.HDDAware); fatal {
 		logger.Printf("%s", label)
 		os.Exit(1)
@@ -255,7 +255,11 @@ func main() {
 	// resumes its converged operating point instead of relearning from the
 	// profile default each boot. Returns whether this box has a baseline (has
 	// been scanned) — if not, we run the first-run box scan below.
-	scanned := loadBaseline(learnedStatePath, cfg, logger)
+	scanned, lastBaselinePersist := loadBaseline(learnedStatePath, cfg, logger)
+	if lastBaselinePersist.IsZero() {
+		lastBaselinePersist = time.Now()
+	}
+	baselineDirty := false
 	// v0.7.2: whatever the comfort's source (profile, env, restored baseline),
 	// hold every class's ramp to its minimum span before the first cycle.
 	enforceCurveSpan(cfg, logger)
@@ -366,6 +370,8 @@ func main() {
 		scanned = true
 		if err := saveBaseline(learnedStatePath, cfg, scanned); err != nil {
 			logger.Printf("WARN: baseline persist: %v", err)
+		} else {
+			lastBaselinePersist = time.Now()
 		}
 	}
 	if !scanned {
@@ -383,8 +389,14 @@ func main() {
 		} else {
 			logger.Printf("box scan: did not complete — using profile comfort, will retry next boot")
 		}
-		if err := saveBaseline(learnedStatePath, cfg, scanned); err != nil {
-			logger.Printf("WARN: baseline persist: %v", err)
+		if scanned {
+			if err := saveBaseline(learnedStatePath, cfg, scanned); err != nil {
+				logger.Printf("WARN: baseline persist: %v", err)
+			} else {
+				lastBaselinePersist = time.Now()
+			}
+		} else {
+			logger.Printf("box scan: incomplete — not checkpointing a failed scan")
 		}
 	}
 
@@ -417,6 +429,16 @@ func main() {
 		select {
 		case <-ctx.Done():
 			logger.Printf("Shutting down — returning fan control to iDRAC automatic")
+			if baselineDirty {
+				if err := saveBaseline(learnedStatePath, cfg, scanned); err != nil {
+					logger.Printf("WARN: shutdown persist learned baseline: %v", err)
+				}
+			}
+			if recon != nil {
+				if err := recon.Persist(); err != nil {
+					logger.Printf("WARN: shutdown persist adaptive state: %v", err)
+				}
+			}
 			if err := c.PersistState(); err != nil {
 				logger.Printf("WARN: shutdown persist state: %v", err)
 			}
@@ -442,15 +464,18 @@ func main() {
 			if time.Since(lastLearn) >= learnInterval {
 				lastLearn = time.Now()
 				if runLearnTick(cfg, obs, logger) {
-					if err := saveBaseline(learnedStatePath, cfg, scanned); err != nil {
-						logger.Printf("WARN: learn persist: %v", err)
-					}
+					baselineDirty = true
 				}
 			}
-			// Persist observer window so it survives container restart.
-			// Best-effort; persistence errors are non-fatal.
-			if err := obs.SaveTo(observerPath); err != nil {
-				logger.Printf("WARN: observer persist: %v", err)
+			// Coalesce learned baseline changes: at most one checkpoint every
+			// six hours, plus a flush on graceful shutdown.
+			if baselineDirty && time.Since(lastBaselinePersist) >= stateCheckpointInterval {
+				if err := saveBaseline(learnedStatePath, cfg, scanned); err != nil {
+					logger.Printf("WARN: learn persist: %v", err)
+				} else {
+					baselineDirty = false
+					lastBaselinePersist = time.Now()
+				}
 			}
 		}
 	}

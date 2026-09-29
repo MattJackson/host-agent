@@ -283,11 +283,9 @@ func (o *Observer) Reset(class envelope.Class) {
 }
 
 // SaveTo serializes the observer's full window state to path atomically
-// (temp file + rename). Called periodically from main so that observer
-// learnings — the actual hardware/environment measurements — survive
-// container restart, image upgrade, and mode change. Without this,
-// every restart triggers a 2-hour warmup before adaptive drift can
-// resume.
+// (temp file + rename). It is an optional API; the host-agent runtime keeps
+// the rolling samples in memory and does not call it, so restarts rebuild the
+// short observer window without frequent durable writes.
 //
 // Schema is observerSchemaVersion-tagged. On version mismatch, LoadFrom
 // silently discards and starts cold. Errors here are returned but the

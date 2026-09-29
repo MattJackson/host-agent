@@ -17,7 +17,7 @@
 # rootfs. --privileged grants CAP_SYS_CHROOT; nothing on the host is
 # written, only read.
 #
-# Output: /var/lib/host-agent/state/apt.prom — picked up by
+# Output: /run/host-agent/state/apt.prom — picked up by
 # node-exporter's textfile collector on the next :9100 scrape.
 
 set -eu
@@ -26,7 +26,7 @@ HOST_ROOT=/host
 APT_CHECK_REL=/usr/lib/update-notifier/apt-check
 APT_CHECK="$HOST_ROOT$APT_CHECK_REL"
 REBOOT_FLAG="$HOST_ROOT/var/run/reboot-required"
-TEXTFILE_DIR=/var/lib/host-agent/state
+TEXTFILE_DIR=/run/host-agent/state
 OUT="$TEXTFILE_DIR/apt.prom"
 TMP="$TEXTFILE_DIR/.apt.prom.tmp"
 INTERVAL=3600  # apt state changes on the timescale of hours, not seconds

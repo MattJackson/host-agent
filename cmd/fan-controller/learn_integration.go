@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"time"
 
 	"github.com/pq/docker-server/host-agent/internal/adaptive"
 	"github.com/pq/docker-server/host-agent/internal/config"
@@ -86,27 +87,28 @@ func enforceCurveSpan(cfg *config.Config, logger controller.Logger) {
 }
 
 type baseline struct {
-	Epoch   int  `json:"epoch"`   // learnEpoch at save time; mismatch ⇒ discard + relearn
-	Scanned bool `json:"scanned"` // true once the first-run box scan has placed comfort
-	CPU     int  `json:"cpu"`
-	GPU     int  `json:"gpu"`
-	HDD     int  `json:"hdd"`
-	SSD     int  `json:"ssd"`
+	Epoch   int       `json:"epoch"`   // learnEpoch at save time; mismatch ⇒ discard + relearn
+	Scanned bool      `json:"scanned"` // true once the first-run box scan has placed comfort
+	SavedAt time.Time `json:"saved_at,omitempty"`
+	CPU     int       `json:"cpu"`
+	GPU     int       `json:"gpu"`
+	HDD     int       `json:"hdd"`
+	SSD     int       `json:"ssd"`
 }
 
 // loadBaseline overlays any persisted learned comfort onto cfg (clamped to the
 // safe envelope) and reports whether this box has already been scanned. No-op /
 // returns false on first run (file absent) — cfg keeps its profile comfort and
 // the caller runs the box scan.
-func loadBaseline(path string, cfg *config.Config, logger controller.Logger) (scanned bool) {
+func loadBaseline(path string, cfg *config.Config, logger controller.Logger) (scanned bool, savedAt time.Time) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return false
+		return false, time.Time{}
 	}
 	var bl baseline
 	if err := json.Unmarshal(b, &bl); err != nil {
 		logger.Printf("learn: ignoring unreadable %s: %v", path, err)
-		return false
+		return false, time.Time{}
 	}
 	// Schema-epoch gate: stale-semantics state is discarded, not resumed. This is
 	// the fleet-wide auto-cleanup — an old (pre-floor-guard) learned.json would
@@ -114,7 +116,7 @@ func loadBaseline(path string, cfg *config.Config, logger controller.Logger) (sc
 	if bl.Epoch != learnEpoch {
 		logger.Printf("learn: discarding stale learned state (epoch %d != %d) — relearning from scan; %s", bl.Epoch, learnEpoch, path)
 		_ = os.Remove(path)
-		return false
+		return false, time.Time{}
 	}
 	// A restored comfort above the span cap is clamped DOWN to it (not ignored):
 	// the persisted value still says "this class runs cool enough to ramp late",
@@ -135,7 +137,7 @@ func loadBaseline(path string, cfg *config.Config, logger controller.Logger) (sc
 	apply("ssd", bl.SSD, &cfg.SSDComfort, comfortCap(envelope.SSD, cfg.SSDEmergency))
 	logger.Printf("learn: restored baseline scanned=%v comfort cpu=%d gpu=%d hdd=%d ssd=%d (from %s)",
 		bl.Scanned, cfg.CPUComfort, cfg.GPUComfort, cfg.HDDComfort, cfg.SSDComfort, path)
-	return bl.Scanned
+	return bl.Scanned, bl.SavedAt
 }
 
 // saveBaseline atomically persists the current comfort + scanned flag.
@@ -143,6 +145,7 @@ func saveBaseline(path string, cfg *config.Config, scanned bool) error {
 	b, err := json.Marshal(baseline{
 		Epoch:   learnEpoch,
 		Scanned: scanned,
+		SavedAt: time.Now().UTC(),
 		CPU:     cfg.CPUComfort, GPU: cfg.GPUComfort, HDD: cfg.HDDComfort, SSD: cfg.SSDComfort,
 	})
 	if err != nil {

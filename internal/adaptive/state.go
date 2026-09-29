@@ -28,12 +28,9 @@ const stateSchemaVersion = 1
 // persistence (fixed v0.2.2).
 const DefaultStatePath = "/var/lib/host-agent/state/adaptive.json"
 
-// DefaultObserverPath is where the observer's rolling sample window is
-// persisted. Same /var/lib/host-agent/state/ mount as State, so
-// observer samples (the actual learnings about the host's thermal
-// behavior) carry across container restart, image upgrade, AND mode
-// change. Without this, every restart triggers a 2-hour observer
-// warmup before the reconciler can make drift decisions.
+// DefaultObserverPath is retained for callers that explicitly serialize an
+// observer. The host-agent runtime keeps this short rolling window in RAM to
+// avoid writing raw samples every control cycle, so it does not use this path.
 const DefaultObserverPath = "/var/lib/host-agent/state/observer.json"
 
 // ClassState is the per-class slice of persisted adaptive state.

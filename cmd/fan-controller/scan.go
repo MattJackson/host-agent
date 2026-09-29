@@ -19,6 +19,7 @@ import (
 func writeScanMetrics(cfg *config.Config, fanLvl int, r sensors.Reading) {
 	_ = metrics.WriteAtomic(metricsFile, metrics.Snapshot{
 		CurrentSpeed:        fanLvl,
+		FanControlEnabled:   true,
 		FanDemand:           fanLvl,
 		InEmergency:         0,
 		CPUMax:              r.CPUMax,

@@ -1,5 +1,5 @@
 // Package metrics emits the Prometheus textfile-collector file that
-// the bash original writes to /var/lib/host-agent/state/metrics.prom.
+// the bash original writes to /run/host-agent/state/metrics.prom.
 //
 // The shape (metric names, label keys, label values, HELP/TYPE lines)
 // must match the bash exactly — node-exporter's textfile collector
@@ -19,9 +19,11 @@ import (
 type Snapshot struct {
 	// Setpoint and EWMA baseline.
 	CurrentSpeed int
-	BaseSpeed    float64
-	Samples      int
-	InEmergency  int // 0 or 1
+	// FanControlEnabled is 1 only when the controller is issuing BMC writes.
+	FanControlEnabled bool
+	BaseSpeed         float64
+	Samples           int
+	InEmergency       int // 0 or 1
 
 	// Wall-clock seconds the most recent cycle took (work only, NOT including the sleep INTERVAL).
 	// Float so sub-second cycles are visible (an integer rounds an 800ms cycle to 0).
@@ -98,7 +100,15 @@ func Render(s Snapshot) []byte {
 	if src == "" {
 		src = "emergency"
 	}
-	fmt.Fprintf(&b, "# HELP fan_controller_fan_setpoint_percent Current chassis fan setpoint commanded by controller.\n")
+	controlEnabled := 0
+	if s.FanControlEnabled {
+		controlEnabled = 1
+	}
+	fmt.Fprintf(&b, "# HELP fan_controller_control_enabled Whether host-agent is actively writing chassis fan commands to the BMC.\n")
+	fmt.Fprintf(&b, "# TYPE fan_controller_control_enabled gauge\n")
+	fmt.Fprintf(&b, "fan_controller_control_enabled %d\n", controlEnabled)
+	fmt.Fprintf(&b, "\n")
+	fmt.Fprintf(&b, "# HELP fan_controller_fan_setpoint_percent Calculated chassis fan setpoint; sent to the BMC only when control_enabled is 1.\n")
 	fmt.Fprintf(&b, "# TYPE fan_controller_fan_setpoint_percent gauge\n")
 	fmt.Fprintf(&b, "fan_controller_fan_setpoint_percent %d\n", s.CurrentSpeed)
 	fmt.Fprintf(&b, "\n")

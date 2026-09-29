@@ -124,6 +124,8 @@ type Controller struct {
 	// Persist cadence.
 	PersistInterval time.Duration
 	LastPersist     time.Time
+	LogInterval     time.Duration
+	LastCycleLog    time.Time
 
 	// Now is injected for deterministic tests.
 	Now func() time.Time
@@ -145,7 +147,8 @@ func New(cfg *config.Config, ipmiClient *ipmi.Client, reader TempReader, log Log
 		LastPGTemp:      -1,
 		LastHDDTemp:     -1,
 		LastSSDTemp:     -1,
-		PersistInterval: 60 * time.Second,
+		PersistInterval: 6 * time.Hour,
+		LogInterval:     5 * time.Minute,
 		Now:             time.Now,
 		FanControl:      true,
 	}
@@ -182,8 +185,10 @@ func (c *Controller) LoadState() {
 		c.CurrentSpeed = c.Cfg.MinFan
 		c.BaseSpeed = float64(c.Cfg.MinFan)
 		c.Samples = 0
+		c.LastPersist = c.Now()
 		return
 	}
+	c.LastPersist = c.Now()
 	c.BaseSpeed = s.BaseSpeed
 	c.Samples = s.Samples
 	lastSpeedStr := "?"
@@ -368,12 +373,15 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 	c.setFan(ctx, c.CurrentSpeed)
 
 	// Log line.
-	c.Log.Printf("%scpu:%d p_gpu:%d a_gpu:%d hdd:%d ssd:%d | curve c%d/p%d/h%d/s%d ag_assist:%d → %d%%(%s) | smooth c%.1f/p%.1f/h%.1f/s%.1f demand %d%%",
-		reading.Details,
-		reading.CPUMax, reading.PassiveGPUMax, reading.ActiveGPUMax, reading.HDDMax, reading.SSDMax,
-		cpuCurve, pgCurve, hddCurve, ssdCurve,
-		agAssist, c.CurrentSpeed, r.Source,
-		c.SmoothCPUTemp, c.SmoothPGTemp, c.SmoothHDDTemp, c.SmoothSSDTemp, demand)
+	if c.LastCycleLog.IsZero() || now.Sub(c.LastCycleLog) >= c.LogInterval {
+		c.Log.Printf("%scpu:%d p_gpu:%d a_gpu:%d hdd:%d ssd:%d | curve c%d/p%d/h%d/s%d ag_assist:%d → %d%%(%s) | smooth c%.1f/p%.1f/h%.1f/s%.1f demand %d%%",
+			reading.Details,
+			reading.CPUMax, reading.PassiveGPUMax, reading.ActiveGPUMax, reading.HDDMax, reading.SSDMax,
+			cpuCurve, pgCurve, hddCurve, ssdCurve,
+			agAssist, c.CurrentSpeed, r.Source,
+			c.SmoothCPUTemp, c.SmoothPGTemp, c.SmoothHDDTemp, c.SmoothSSDTemp, demand)
+		c.LastCycleLog = now
+	}
 
 	// EWMA + samples.
 	c.BaseSpeed = control.Ewma(c.BaseSpeed, float64(c.CurrentSpeed), cfg.AdaptAlpha)
@@ -410,6 +418,7 @@ func (c *Controller) Cycle(ctx context.Context) metrics.Snapshot {
 
 	snap := metrics.Snapshot{
 		CurrentSpeed:         c.CurrentSpeed,
+		FanControlEnabled:    c.FanControl,
 		BaseSpeed:            c.BaseSpeed,
 		Samples:              c.Samples,
 		CycleDurationSeconds: c.lastCycleDuration,
@@ -492,6 +501,7 @@ func (c *Controller) snapshotEmergency(reading sensors.Reading, source string) m
 	cfg := c.Cfg
 	snap := metrics.Snapshot{
 		CurrentSpeed:             c.CurrentSpeed,
+		FanControlEnabled:        c.FanControl,
 		BaseSpeed:                c.BaseSpeed,
 		Samples:                  c.Samples,
 		CycleDurationSeconds:     c.lastCycleDuration,

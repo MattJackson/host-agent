@@ -14,10 +14,39 @@
 # /dev/... path. Per buildDeviceLabel() in smartctl_exporter, /dev/sda
 # becomes `sda` and /dev/bus/0 with -d megaraid,0 becomes `bus_0_megaraid_0`.
 # So the exclude regex must start with `sd`, not `/dev/sd`.
+boot_device_filter() {
+  source=$(awk '$2 == "/boot" { print $1; exit }' /host/proc/mounts 2>/dev/null || true)
+  case "$source" in
+    /dev/*) ;;
+    *) return 0 ;;
+  esac
+  name=${source##*/}
+  parent=$name
+  sys_path=$(readlink -f "/host/sys/class/block/$name" 2>/dev/null || true)
+  case "$sys_path" in
+    *"/block/"*) rest=${sys_path#*"/block/"}; parent=${rest%%/*} ;;
+  esac
+  printf '^(/dev/)?(%s|%s)$' "$parent" "$name"
+}
+
+BOOT_DEVICE_EXCLUDE=$(boot_device_filter)
+if [ -n "$BOOT_DEVICE_EXCLUDE" ]; then
+  echo "[smartctl-exporter] excluding host /boot device(s): $BOOT_DEVICE_EXCLUDE"
+fi
+
 if smartctl --scan 2>/dev/null | grep -q 'megaraid'; then
   echo "[smartctl-exporter] megaraid passthrough detected — excluding sd[a-z] phantoms"
+  EXCLUDE='^sd[a-z]'
+  if [ -n "$BOOT_DEVICE_EXCLUDE" ]; then
+    EXCLUDE="$EXCLUDE|$BOOT_DEVICE_EXCLUDE"
+  fi
   exec /usr/local/bin/smartctl_exporter \
     --web.listen-address=:9633 \
-    --smartctl.device-exclude='^sd[a-z]'
+    --smartctl.device-exclude="$EXCLUDE"
+fi
+if [ -n "$BOOT_DEVICE_EXCLUDE" ]; then
+  exec /usr/local/bin/smartctl_exporter \
+    --web.listen-address=:9633 \
+    --smartctl.device-exclude="$BOOT_DEVICE_EXCLUDE"
 fi
 exec /usr/local/bin/smartctl_exporter --web.listen-address=:9633

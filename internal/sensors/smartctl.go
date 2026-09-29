@@ -44,6 +44,7 @@ type Smartctl struct {
 	Runner       runner.Runner
 	Enabled      bool
 	Drives       []Drive
+	Excluded     map[string]struct{}
 	ReadInterval time.Duration
 	// Now is injected for deterministic tests.
 	Now func() time.Time
@@ -114,6 +115,9 @@ func (s *Smartctl) Probe(ctx context.Context, mode string) (label string, fatal 
 		// Field 1 is `-d`, field 2 is the spec (scsi, megaraid,N, nvme, sat).
 		spec := fields[2]
 		if dev == "" || spec == "" {
+			continue
+		}
+		if IsExcludedDevice(dev, s.Excluded) {
 			continue
 		}
 

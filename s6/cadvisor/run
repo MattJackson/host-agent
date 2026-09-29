@@ -11,10 +11,12 @@ fi
 
 # Port 8089 (not 8080) to avoid colliding with apps that commonly bind
 # 8080 on host network (e.g. unifi-os).
+# cAdvisor's filesystem and disk I/O series can inspect mounted USB media;
+# disable those categories while keeping CPU, memory, and network metrics.
 exec /usr/local/bin/cadvisor \
   --port=8089 \
   --docker_only=true \
   --store_container_labels=true \
   --housekeeping_interval=30s \
   --max_housekeeping_interval=60s \
-  --disable_metrics=referenced_memory,tcp,udp,advtcp,process,hugetlb,resctrl
+  --disable_metrics=disk,diskIO,referenced_memory,tcp,udp,advtcp,process,hugetlb,resctrl

@@ -111,7 +111,7 @@ The container appears in your Prometheus on its first scrape, labeled with `host
 
 `apt-status` runs `chroot /host /usr/lib/update-notifier/apt-check` once an hour and emits `host_apt_updates_pending{type="all"|"security"}` plus `host_reboot_required` (0/1, gated on `/var/run/reboot-required`). Useful when you've disabled `unattended-upgrades` on production hosts and want a "pending updates" panel as your planned-patch-cycle to-do list; the reboot-required flag is the single best post-upgrade safety check.
 
-`node_exporter` runs with `--collector.textfile.directory=/var/lib/host-agent/state`, so the fan controller's own state metrics (setpoint, EWMA baseline, per-class temps & targets, adaptive targets) are emitted alongside the standard node metrics on `:9100`. The dashboard treats them as native Prometheus series.
+`node_exporter` reads fan-controller runtime textfiles from RAM-backed `/run/host-agent/state`, so setpoints, temperatures, and adaptive targets appear alongside standard node metrics on `:9100`. Its filesystem collector excludes `/boot` and removable USB mounts while retaining normal capacity metrics for other filesystems.
 
 **Adaptive controller (v0.2.0+).** The fan controller has two layers. A fast PID layer cycles every 15s and emits per-class fan-speed candidates; max() across all candidates plus per-class proximity floors drives the chassis. A slow intent layer (`HOST_AGENT_MODE=max-cool|balanced|min-noise|eco`) sits above it and drifts per-class targets every 10 min toward the chassis's actual equilibrium — within hardware envelopes encoded in the agent (CPU TJunction, NVIDIA passive datacenter envelope, Google HDD optimal band, NAND specs). Operators state intent; the agent picks numbers. Per-class env-var overrides (`CPU_TARGET=70` etc.) still win and disable adaptive on that class. See [`docs/adaptive-controller-v2.md`](docs/adaptive-controller-v2.md) for the full design.
 
@@ -156,25 +156,41 @@ Drop the two env vars in an `.env` next to the compose, then `docker compose up 
 
 ### Option C — Unraid (XML template direct from GitHub)
 
-The `install/host-agent.xml` template is consumable directly from GitHub — no Community Applications submission needed. **The URL is set via a file in appdata, not the template** — that decouples your config from Unraid's Force Update behavior.
+The `install/host-agent.xml` template is consumable directly from GitHub — no Community Applications submission needed. Set the Prometheus endpoint in the template's `PROMETHEUS_REMOTE_WRITE_URL` field.
 
-**One-time SSH setup** (does both the URL file and the template fetch in one go):
+**One-time SSH setup** (fetches the template):
 
 ```sh
-mkdir -p /mnt/user/appdata/host-agent/config
-echo 'http://your-prometheus:9090/api/v1/write' \
-  > /mnt/user/appdata/host-agent/config/remote_write_url
 curl -sfLO --output-dir /boot/config/plugins/dockerMan/templates-user \
   https://raw.githubusercontent.com/MattJackson/host-agent/main/install/host-agent.xml
 ```
 
+On a Dell PowerEdge running Unraid, load the host kernel's IPMI interface at
+each boot so `/dev/ipmi0` is available before Docker starts. Add this block
+once to `/boot/config/go` (preserve the rest of that file):
+
+```sh
+/sbin/modprobe ipmi_si
+/sbin/modprobe ipmi_devintf
+```
+
+The container includes the IPMI userspace tools and talks through the host's
+`/dev/ipmi0`; it cannot provide the host kernel driver itself. The template
+bind-mounts `/mnt/user/appdata/host-agent` for learned state and gives the
+container a RAM-backed `/run` for metrics, temporary files, and vmagent's
+unsent queue. Node-exporter excludes `/boot` and removable USB filesystems;
+cAdvisor disk and filesystem metrics are disabled. Filesystem capacity remains
+available for non-removable filesystems. SMART discovery excludes the block
+device backing `/boot`. A restart can lose unsent remote-write samples and the
+observer's short rolling window.
+
 **Then in the web UI**: Docker tab → **Add Container** → Template dropdown → pick **host-agent** under "User templates" → **Apply**.
 
-That's it. No env vars to fill in. If your Prometheus needs auth, toggle **Advanced View** in the form to expose the optional bearer-token / basic-auth / TLS-skip fields.
+Set the Prometheus `/api/v1/write` URL in the template. If your receiver needs auth, toggle **Advanced View** to expose the optional bearer-token / basic-auth / TLS-skip fields.
 
 All paths and the `--cgroupns=host` flag are pre-baked into the template. To get listed in Community Applications search, submit the XML to [Squidly271/AppFeed](https://github.com/Squidly271/AppFeed) — not required for personal use.
 
-**Future updates** — just click **Force Update** in the Docker tab. The URL is in appdata; Unraid can't lose it. If a release adds new template fields (rare), the release notes will tell you to re-run the curl above; otherwise leave the template alone.
+**Future updates** — just click **Force Update** in the Docker tab. If a release adds new template fields (rare), the release notes will tell you to re-run the curl above; otherwise leave the template alone.
 
 ### Option D — `install.sh` one-shot (curl-pipe)
 
@@ -262,14 +278,7 @@ Every knob is an env var. Required:
 | `HOST_AGENT_IMAGE` | image to pull, e.g. `ghcr.io/mattjackson/host-agent:latest` |
 | `PROMETHEUS_REMOTE_WRITE_URL` | your receiver's `/api/v1/write` endpoint |
 
-**Persistent URL fallback** (recommended on Unraid and any platform with a managed container UI): write the URL to a file inside the state mount instead of (or in addition to) the env var:
-
-```sh
-mkdir -p /var/lib/host-agent/config   # on Unraid: /mnt/user/appdata/host-agent/config/
-echo "https://your.prometheus/api/v1/write" > /var/lib/host-agent/config/remote_write_url
-```
-
-vmagent reads from this file if `PROMETHEUS_REMOTE_WRITE_URL` is unset or equal to the example.com placeholder. The file lives in the appdata mount, so it survives container recreations, image updates, and template re-curls — set it once, never reconfigure.
+Pass the receiver URL through the container environment. Host-agent does not read a persistent URL file at runtime.
 
 Optional — Prometheus push auth (bearer XOR basic):
 
@@ -385,14 +394,14 @@ final_speed = max(cpu_cand, pg_cand, hdd_cand, ssd_cand,
 SetFan(final_speed)  # unconditional every cycle, not on change —
                      # BMC's revert-watchdog tracks the SetFan command.
 
-EWMA baseline (persisted to /var/lib/host-agent/state/base):
+EWMA baseline (checkpointed to /var/lib/host-agent/state/base every six hours and on graceful shutdown):
     base_speed = (1 - α) * base_speed + α * current_speed
     # α = 0.001/cycle → settles over 24-48 hrs of operation.
 ```
 
-The whole loop runs every `INTERVAL_SEC=15s`. All temperature thresholds, gains, and timing constants come from the chassis profile + class defaults — no hardcoded fan values, no lookup tables, no piecewise rules.
+The whole loop runs every `INTERVAL_SEC=15s`. Temperature metrics are rendered to RAM-backed `/run/host-agent/state`; learned state is checkpointed at most every six hours and on graceful shutdown. Observer samples stay in RAM and warm up again after restart. All temperature thresholds, gains, and timing constants come from the chassis profile + class defaults — no hardcoded fan values, no lookup tables, no piecewise rules.
 
-**Adaptive intent layer** (slow loop, every `ADAPTIVE_CYCLE_MINUTES=10`). With `HOST_AGENT_MODE` set, an observer accumulates per-class (temp, fan-demand, inlet) samples over a 120-min rolling window. Each reconcile cycle scores three projected futures (target now / +1°C / -1°C) using the mode's score function against (mean, stddev, fan-change-rate, fan-demand-mean) and drifts target by the winning delta — bounded by the class's envelope `[PreferredLow, PreferredHigh]` (hardware-derived), rate-limited to ±1°C per cycle, and reset to mode-initial on stddev > 5°C. The score functions encode two complementary signals: v0.3.4's PID-engagement relief (raising target reduces variance + fan-change-rate, not just mean) lets adaptive find equilibrium inside the satisficing band, and v0.3.7's quadratic saturation penalty on fan-demand-mean breaks the "fan stuck at 100 but in-band" tie that previously read as "settled" — so target rises promptly when the chassis can't physically meet it, instead of after an hour of drift. State persists to `/var/lib/host-agent/state/adaptive.json` and survives container restarts; the observer window also persists, so a restart doesn't cost a 2-hour warmup. See [`docs/adaptive-controller-v2.md`](docs/adaptive-controller-v2.md) for the full design.
+**Adaptive intent layer** (slow loop, every `ADAPTIVE_CYCLE_MINUTES=10`). With `HOST_AGENT_MODE` set, an observer accumulates per-class (temperature, fan-demand, inlet) samples in a 20-minute rolling window in RAM. Each reconcile cycle scores projected targets using the mode's score function and bounded class envelopes. Adaptive target state is checkpointed to `/var/lib/host-agent/state/adaptive.json` every six hours and on graceful shutdown; raw samples warm up again after restart. See [`docs/adaptive-controller-v2.md`](docs/adaptive-controller-v2.md) for the full design.
 
 ### Per-chassis profiles
 
@@ -466,7 +475,7 @@ Zero external Go dependencies by design. The fan controller is stdlib only, so t
 | Bundled metrics (node + cadvisor + ipmi + smart + nvidia) | none | usually none | partial (no GPU, no drives, no chassis) | yes (after wiring N containers) | yes |
 | One container per host | n/a | n/a (cron script) | yes | no (5-6 containers) | yes |
 | Self-disables on missing hardware | n/a | rarely | n/a | per-container, manual | yes (same image runs anywhere) |
-| Survives container restart cleanly | n/a | per-script | yes | yes | yes (EWMA + observer persist) |
+| Survives container restart cleanly | n/a | per-script | yes | yes | yes (learned state; observer warms up again) |
 | Operational overhead per new host | none | per-host script tweak | one compose | N composes + N image bumps | one compose, one image bump |
 | OSS | n/a (vendor firmware) | usually | yes (Apache 2) | yes (Apache 2) | yes (MIT) |
 | No extra software | yes | no | no | no | no |
@@ -517,7 +526,7 @@ sudo rm /var/lib/host-agent/state/adaptive.json
 sudo docker start host-agent
 ```
 
-The observer window (`observer.json`) is mode-agnostic and does not need to be cleared.
+Raw observer samples are held in RAM and are rebuilt after restart; there is no `observer.json` file to clear.
 
 **Per-host tuning** (advanced): drop env vars in `.env` next to the compose (e.g. `CPU_TARGET=72` to run quieter). Container env beats profile beats default. Most users should never need this — the chassis profile auto-loads sane defaults, and `HOST_AGENT_MODE` covers the "I want quieter / cooler" intent without per-class numbers.
 

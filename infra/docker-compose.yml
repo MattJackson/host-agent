@@ -80,5 +80,9 @@ services:
       - /var/lib/docker:/var/lib/docker:ro
       - /dev:/dev
       - /var/lib/host-agent:/var/lib/host-agent
+    # Runtime metrics, generated config, and vmagent's unsent queue live in
+    # RAM. Only learned controller state is kept in the persistent appdata bind.
+    tmpfs:
+      - /run:rw,nosuid,nodev,size=256m,mode=755
     labels:
       - "com.centurylinklabs.watchtower.enable=true"

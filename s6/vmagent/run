@@ -35,26 +35,11 @@
 # Adding a new chassis: drop a `host-agent/profiles/<model>.env` with
 # SENSOR_* values + fan tuning. No vmagent code change.
 
-# URL resolution order:
-#   1. PROMETHEUS_REMOTE_WRITE_URL env (if set AND not the placeholder).
-#   2. /var/lib/host-agent/config/remote_write_url file (persistent
-#      override stored in the appdata mount — survives every container
-#      recreation, image update, and template re-curl).
-#   3. Disable vmagent.
-#
-# The file-based fallback exists because some platforms (notably Unraid
-# Force Update on certain code paths) reset env vars to the template's
-# Default attribute. By persisting in appdata, the user sets the URL
-# ONCE and it survives every update without reconfiguration.
-URL_FILE=/var/lib/host-agent/config/remote_write_url
+# The receiver URL is configuration, supplied through the container
+# environment; no runtime config file is read from a persistent mount.
 PLACEHOLDER="https://your-prometheus.example.com/api/v1/write"
 
 REMOTE_WRITE_URL="${PROMETHEUS_REMOTE_WRITE_URL:-}"
-if [ "$REMOTE_WRITE_URL" = "$PLACEHOLDER" ] || [ -z "$REMOTE_WRITE_URL" ]; then
-  if [ -r "$URL_FILE" ]; then
-    REMOTE_WRITE_URL="$(head -1 "$URL_FILE" | tr -d '[:space:]')"
-  fi
-fi
 if [ "$REMOTE_WRITE_URL" = "$PLACEHOLDER" ]; then
   REMOTE_WRITE_URL=""
 fi
@@ -63,14 +48,11 @@ HOSTNAME_LABEL="$(hostname -s)"
 
 if [ -z "$REMOTE_WRITE_URL" ]; then
   echo "[vmagent] No usable PROMETHEUS_REMOTE_WRITE_URL — vmagent disabled."
-  echo "[vmagent] Either:"
-  echo "[vmagent]   (a) set the env var to your receiver's /api/v1/write endpoint, OR"
-  echo "[vmagent]   (b) persist it across updates by writing to: $URL_FILE"
-  echo "[vmagent]       (on Unraid: /mnt/user/appdata/host-agent/config/remote_write_url)"
+  echo "[vmagent] Set PROMETHEUS_REMOTE_WRITE_URL to your receiver's /api/v1/write endpoint."
   echo "[vmagent] Sibling exporters (node, cadvisor, ipmi, smartctl, nvidia-gpu, fan controller) continue running."
   exec sleep infinity
 fi
-WAL_DIR=/var/lib/host-agent/vmagent-wal
+WAL_DIR=/run/host-agent/vmagent-wal
 PROFILE_DIR=/etc/fan-controller/profiles
 
 # Image build version (short git SHA, written at build time).
@@ -101,7 +83,7 @@ set -a; . "$PROFILE_DIR/default.env"; set +a
 # Write host_agent_info textfile NOW that MODEL/PROFILE_FILE are known.
 # node-exporter's textfile collector picks it up as
 # host_agent_info{version,chassis,profile} = 1.
-TEXTFILE_DIR=/var/lib/host-agent/state
+TEXTFILE_DIR=/run/host-agent/state
 mkdir -p "$TEXTFILE_DIR"
 cat > "$TEXTFILE_DIR/.host_agent_info.prom.tmp" <<EOF
 # HELP host_agent_info Build version + detected chassis profile for the host-agent container.
@@ -111,6 +93,7 @@ EOF
 mv "$TEXTFILE_DIR/.host_agent_info.prom.tmp" "$TEXTFILE_DIR/host_agent_info.prom"
 
 mkdir -p "$WAL_DIR"
+mkdir -p /run/host-agent/state
 
 # build_ipmi_rule: emit one metric_relabel_configs entry. Empty NAME
 # means "this chassis doesn't expose that class via IPMI" -> skip.

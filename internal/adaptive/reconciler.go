@@ -117,6 +117,9 @@ type ReconcilerOptions struct {
 	Observer  *Observer
 	Mode      mode.Mode
 	StatePath string // where to persist State
+	// PersistInterval coalesces durable checkpoints. Zero preserves the
+	// historical save-every-Step behavior for library callers and tests.
+	PersistInterval time.Duration
 
 	// Optional — all default to constants above when zero-valued.
 	DriftRatePerCycle     int
@@ -149,10 +152,11 @@ type ReconcilerOptions struct {
 // Reconciler is goroutine-safe: Step() takes its mutex around the
 // reconcile pass and around State accessors.
 type Reconciler struct {
-	mu      sync.Mutex
-	o       ReconcilerOptions
-	state   State
-	classes []envelope.Class // stable order for action emission
+	mu          sync.Mutex
+	o           ReconcilerOptions
+	state       State
+	classes     []envelope.Class // stable order for action emission
+	lastPersist time.Time
 
 	// driftsByClassDirection is the per-Step accumulating counter state for drift direction. Updated inside Step() while r.mu is held. Read via Metrics().
 	driftsByClassDirection map[envelope.Class]map[string]int64 // direction: "up", "down", "bounded_high", "bounded_low"
@@ -199,7 +203,7 @@ func NewReconciler(opts ReconcilerOptions) (*Reconciler, error) {
 		opts.PerClassOverrides = map[envelope.Class]bool{}
 	}
 
-	r := &Reconciler{o: opts}
+	r := &Reconciler{o: opts, lastPersist: opts.Now()}
 	// Stable class order for emission. Match the order used by
 	// the metrics package (CPU, PassiveGPU, HDD, SSD).
 	r.classes = []envelope.Class{envelope.CPU, envelope.PassiveGPU, envelope.HDD, envelope.SSD}
@@ -338,10 +342,29 @@ func (r *Reconciler) Step() ([]DriftAction, error) {
 	r.state.Version = stateSchemaVersion
 
 	var saveErr error
-	if r.o.StatePath != "" {
+	if r.o.StatePath != "" && (r.o.PersistInterval <= 0 || now.Sub(r.lastPersist) >= r.o.PersistInterval) {
 		saveErr = SaveState(r.o.StatePath, r.state)
+		if saveErr == nil {
+			r.lastPersist = now
+		}
 	}
 	return actions, saveErr
+}
+
+// Persist checkpoints the latest adaptive target state, typically during
+// graceful shutdown. Normal operation uses PersistInterval to coalesce writes.
+func (r *Reconciler) Persist() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.o.StatePath == "" {
+		return nil
+	}
+	r.state.LastUpdate = r.o.Now()
+	err := SaveState(r.o.StatePath, r.state)
+	if err == nil {
+		r.lastPersist = r.o.Now()
+	}
+	return err
 }
 
 // reconcileClass evaluates one class. Caller holds r.mu.

@@ -159,7 +159,7 @@ A **mode** is the operator's intent. Modes are an enum: `MaxCool`, `Balanced`, `
 
 The **adaptive target** is the per-class temperature setpoint currently in use by the PID. Initialized from mode + envelope. Refined over time by the adaptive layer based on observation.
 
-Persisted to disk so it survives container restart.
+The learned target is persisted to disk so it survives container restart; raw rolling samples stay in RAM.
 
 ### Observation window
 
@@ -535,14 +535,14 @@ Bind-mounted from the host (same dir as v1's `base` EWMA file). Survives contain
 ### Lifecycle
 
 - **Startup**: read state file. If mode in file matches current `HOST_AGENT_MODE`, resume from saved targets. If mode changed, reset to new mode's initial targets.
-- **Each adaptive cycle**: write updated state atomically (write to `adaptive.json.tmp`, fsync, rename).
+- **Checkpoint cadence**: adaptive target state is atomically saved at most every six hours and on graceful shutdown. Raw observer samples remain in RAM and are rebuilt after restart.
 - **Mode change at runtime**: detected by env reload (not yet supported — `HOST_AGENT_MODE` is read only at startup). When supported, mode change triggers reset.
 - **Corruption / parse error**: log warning, ignore, reset to mode-initial targets.
 
 ### Migration from v1
 
 On first run after upgrading to v2:
-- If `adaptive.json` doesn't exist: normal cold-start, warm window over 2 hrs
+- If `adaptive.json` does not exist: normal cold-start. The observer rebuilds its configured window in RAM (20 minutes by default).
 - If v1's `base` EWMA file exists: ignored (v2 uses its own state)
 
 No data migration needed. v1's EWMA was for chassis equilibrium, not class targets.

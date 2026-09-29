@@ -1114,6 +1114,61 @@ func TestReconciler_Step_PersistsState(t *testing.T) {
 	}
 }
 
+func TestReconciler_PersistIntervalCoalescesWrites(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "adaptive.json")
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	r, err := NewReconciler(ReconcilerOptions{
+		Observer:        NewObserver(5, 10),
+		Mode:            mode.Balanced,
+		StatePath:       statePath,
+		PersistInterval: 6 * time.Hour,
+		WindowSize:      5,
+		Now:             func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.Step(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Fatalf("state was written before checkpoint interval: stat err=%v", err)
+	}
+
+	now = now.Add(6 * time.Hour)
+	if _, err := r.Step(); err != nil {
+		t.Fatal(err)
+	}
+	saved, loaded, err := LoadState(statePath)
+	if err != nil || !loaded {
+		t.Fatalf("LoadState() loaded=%v err=%v", loaded, err)
+	}
+	if !saved.LastUpdate.Equal(now) {
+		t.Fatalf("saved LastUpdate=%s, want checkpoint time %s", saved.LastUpdate, now)
+	}
+
+	now = now.Add(time.Hour)
+	if _, err := r.Step(); err != nil {
+		t.Fatal(err)
+	}
+	saved, loaded, err = LoadState(statePath)
+	if err != nil || !loaded {
+		t.Fatalf("LoadState() loaded=%v err=%v", loaded, err)
+	}
+	if !saved.LastUpdate.Equal(now.Add(-time.Hour)) {
+		t.Fatalf("state rewrote before next checkpoint: LastUpdate=%s", saved.LastUpdate)
+	}
+
+	if err := r.Persist(); err != nil {
+		t.Fatal(err)
+	}
+	saved, loaded, err = LoadState(statePath)
+	if err != nil || !loaded || !saved.LastUpdate.Equal(now) {
+		t.Fatalf("shutdown Persist() state=%+v loaded=%v err=%v", saved, loaded, err)
+	}
+}
+
 func TestReconciler_State_Snapshot_IsCopy(t *testing.T) {
 	o := NewObserver(5, 10.0)
 	nowBase := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)

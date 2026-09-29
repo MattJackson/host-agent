@@ -86,7 +86,7 @@ func TestLoadBaseline_ClampsToSpanCap(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg := spanCfg()
-			if !loadBaseline(path, cfg, &capLog{}) {
+			if scanned, _ := loadBaseline(path, cfg, &capLog{}); !scanned {
 				t.Fatal("scanned=true baseline should report scanned")
 			}
 			got := [4]int{cfg.CPUComfort, cfg.GPUComfort, cfg.HDDComfort, cfg.SSDComfort}
@@ -109,7 +109,7 @@ func TestLoadBaseline_DiscardsEpoch3(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := spanCfg()
-	if loadBaseline(path, cfg, &capLog{}) {
+	if scanned, _ := loadBaseline(path, cfg, &capLog{}); scanned {
 		t.Error("epoch-3 state must not report scanned")
 	}
 	if cfg.CPUComfort != 60 || cfg.GPUComfort != 75 {
