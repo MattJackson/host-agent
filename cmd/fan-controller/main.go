@@ -288,12 +288,21 @@ func main() {
 	}
 	c.CurrentSpeed = startSpeed
 
-	// Explicit operator opt-out: leave fans to the BMC entirely.
-	if v := os.Getenv("HOST_AGENT_FAN_CONTROL"); v != "" {
-		switch strings.ToLower(strings.TrimSpace(v)) {
-		case "off", "false", "0", "no", "disable", "disabled":
+	// Explicit operator opt-out: leave fans to the BMC entirely. Older Unraid
+	// templates shipped HOST_AGENT_FAN_CONTROL=off even on supported Dell
+	// PowerEdge systems. For this known chassis that legacy value must not keep
+	// the controller monitor-only after an image update; an operator can still
+	// explicitly opt out with HOST_AGENT_FAN_CONTROL=monitor-only.
+	fanControlSetting := strings.ToLower(strings.TrimSpace(os.Getenv("HOST_AGENT_FAN_CONTROL")))
+	switch fanControlSetting {
+	case "off", "false", "0", "no", "disable", "disabled":
+		if isLegacyUnraidDellFanOptOut(os.Getenv("HOST_OS"), model, vendor) {
+			logger.Printf("ignoring legacy HOST_AGENT_FAN_CONTROL=%q on supported Unraid Dell %s; use monitor-only to leave fans under iDRAC", fanControlSetting, model)
+		} else {
 			c.FanControl = false
 		}
+	case "monitor-only":
+		c.FanControl = false
 	}
 
 	if !c.FanControl {
@@ -479,6 +488,12 @@ func main() {
 			}
 		}
 	}
+}
+
+func isLegacyUnraidDellFanOptOut(hostOS, model, vendor string) bool {
+	return strings.EqualFold(strings.TrimSpace(hostOS), "unraid") &&
+		strings.EqualFold(strings.TrimSpace(model), "dell_xc730xd_12") &&
+		strings.Contains(strings.ToLower(vendor), "dell")
 }
 
 func runCycle(ctx context.Context, c *controller.Controller) {

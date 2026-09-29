@@ -61,6 +61,25 @@ func TestComfortCap_PerClass(t *testing.T) {
 	}
 }
 
+func TestIsLegacyUnraidDellFanOptOut(t *testing.T) {
+	cases := []struct {
+		name, hostOS, model, vendor string
+		want                        bool
+	}{
+		{"supported Dell on Unraid", "Unraid", "dell_xc730xd_12", "Dell Inc.", true},
+		{"wrong chassis", "Unraid", "dell_r730xd", "Dell Inc.", false},
+		{"non-Dell BMC", "Unraid", "dell_xc730xd_12", "Supermicro", false},
+		{"non-Unraid host", "Linux", "dell_xc730xd_12", "Dell Inc.", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isLegacyUnraidDellFanOptOut(tc.hostOS, tc.model, tc.vendor); got != tc.want {
+				t.Fatalf("isLegacyUnraidDellFanOptOut(%q, %q, %q) = %t, want %t", tc.hostOS, tc.model, tc.vendor, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestLoadBaseline_ClampsToSpanCap: a restored comfort above the cap is clamped
 // DOWN to it (previously: ignored if > emergency-1, kept if <= emergency-1).
 func TestLoadBaseline_ClampsToSpanCap(t *testing.T) {

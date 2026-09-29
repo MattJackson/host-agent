@@ -4,6 +4,18 @@ All notable changes to this project are documented here. This project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [0.7.4] — 2026-09-28
+
+### Fixed — enable fan control with legacy Unraid template setting
+
+Older Unraid templates set `HOST_AGENT_FAN_CONTROL=off`, leaving a supported
+Dell XC730xd-12 in monitor-only mode even when IPMI was available. The fan
+controller now treats that legacy value as enabled only when all three checks
+match: Unraid host, Dell XC730xd-12 profile, and Dell BMC. Other systems still
+honor `off`; `HOST_AGENT_FAN_CONTROL=monitor-only` is the explicit opt-out for
+this supported Unraid Dell. The controller still probes the BMC's fan command
+before continuing and returns control to iDRAC automatic mode if probing fails.
+
 ## [0.7.3] — 2026-09-28
 
 ### Fixed — keep runtime metrics and queued samples off the Unraid boot device
