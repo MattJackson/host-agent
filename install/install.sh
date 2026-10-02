@@ -70,7 +70,7 @@ docker run -d \
   --privileged \
   --network host \
   --cgroupns host \
-  --tmpfs /run:rw,nosuid,nodev,size=256m,mode=755 \
+  --tmpfs /run:rw,exec,nosuid,nodev,size=256m,mode=755 \
   --label com.centurylinklabs.watchtower.enable=true \
   $ENV_ARGS \
   -v /:/host:ro,rslave \

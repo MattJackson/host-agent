@@ -40,7 +40,7 @@
   <WebUI/>
   <TemplateURL/>
   <Icon>https://raw.githubusercontent.com/prometheus/docs/main/static/prometheus-logo-orange.svg</Icon>
-  <ExtraParams>--restart=unless-stopped --cgroupns=host --tmpfs /run:rw,nosuid,nodev,size=256m,mode=755</ExtraParams>
+  <ExtraParams>--restart=unless-stopped --cgroupns=host --tmpfs /run:rw,exec,nosuid,nodev,size=256m,mode=755</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DateInstalled/>
