@@ -4,6 +4,24 @@ All notable changes to this project are documented here. This project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
 
+## [0.8.0] — 2026-10-09
+
+### Added — BMC LAN watchdog (recover a BMC that lost its DHCP lease)
+
+New `bmc-lan-watchdog` s6 service. Some BMCs end up with IP source DHCP but
+address `0.0.0.0` and never retry. On an R410 iDRAC6 sharing the onboard NIC
+this happened after a few days of uptime, and out-of-band power control
+stopped working until someone ran `ipmitool mc reset cold` on the host. The
+watchdog checks `ipmitool lan print` every 5 minutes. After two consecutive
+checks with no address, it issues `mc reset cold`, which reboots only the BMC.
+If a reset doesn't bring the address back, the wait before the next one
+doubles from 30 minutes up to 24 hours. A BMC configured with a static
+`0.0.0.0` is reported but never reset. Exports `host_bmc_lan_ip_assigned`,
+`host_bmc_lan_dhcp`, `host_bmc_lan_readable` and `host_bmc_lan_resets_total`.
+Controlled by `HOST_AGENT_BMC_WATCHDOG=on|monitor-only|off` (default `on`) and
+`BMC_LAN_CHANNEL` (default: autodetect). fan-controller re-asserts manual fan
+mode every cycle, so it keeps fan control through the BMC reset.
+
 ## [0.7.5] — 2026-09-28
 
 ### Fixed — keep high-churn runtime files in RAM without template changes

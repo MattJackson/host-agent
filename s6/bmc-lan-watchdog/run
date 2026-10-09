@@ -1,0 +1,147 @@
+#!/usr/bin/env sh
+# bmc-lan-watchdog: notice when the BMC has lost its DHCP lease and
+# bring it back with a BMC-only cold reset.
+#
+# Some BMCs (seen on an R410 iDRAC6 in shared-LOM mode) intermittently
+# end up with IP Address Source = DHCP but IP 0.0.0.0 and never retry.
+# The host keeps running fine, but the BMC drops off the LAN, so
+# out-of-band power control (ipmitool -I lanplus) silently stops working
+# until someone runs `ipmitool mc reset cold` on the host. This service
+# is that someone.
+#
+# Every INTERVAL it reads `ipmitool lan print <channel>` over the local
+# /dev/ipmi0. If the BMC is on DHCP and has no address for BAD_LIMIT
+# consecutive reads, it issues `mc reset cold`. The host OS is not
+# touched; the BMC reboots (~1-2 min) and re-runs DHCP. fan-controller
+# re-asserts manual fan control every cycle, so it rides through the
+# reset. Failed resets back off exponentially (COOLDOWN doubling, capped
+# at MAX_COOLDOWN) so a BMC with no DHCP server or no cable isn't
+# bounced every few minutes forever. A static-IP BMC at 0.0.0.0 is
+# reported but never reset (that's a config problem, not a lost lease).
+#
+# Env:
+#   HOST_AGENT_BMC_WATCHDOG  on (default) | monitor-only | off
+#   BMC_LAN_CHANNEL          LAN channel number (default: autodetect)
+#
+# Output: /run/host-agent/state/bmc_lan.prom — picked up by
+# node-exporter's textfile collector on the next :9100 scrape.
+
+set -eu
+
+MODE="${HOST_AGENT_BMC_WATCHDOG:-on}"
+TEXTFILE_DIR=/run/host-agent/state
+OUT="$TEXTFILE_DIR/bmc_lan.prom"
+TMP="$TEXTFILE_DIR/.bmc_lan.prom.tmp"
+INTERVAL=300       # a lost lease is an hours-scale problem, not seconds
+BAD_LIMIT=2        # consecutive 0.0.0.0 reads before acting (skips renew blips)
+COOLDOWN=1800      # wait after a reset before another one is allowed
+MAX_COOLDOWN=86400 # backoff cap for a BMC that never gets a lease
+
+log() { echo "[bmc-lan-watchdog] $*"; }
+
+if [ "$MODE" = "off" ]; then
+  log "HOST_AGENT_BMC_WATCHDOG=off — disabled"
+  rm -f "$OUT"
+  exec sleep infinity
+fi
+if [ ! -c /dev/ipmi0 ]; then
+  log "/dev/ipmi0 absent — disabled on this host"
+  rm -f "$OUT"
+  exec sleep infinity
+fi
+
+# First channel whose medium is 802.3 LAN. Dell BMCs use 1, Supermicro
+# and HPE also 1, some Intel/Lenovo boards use 3 or 8.
+CHANNEL="${BMC_LAN_CHANNEL:-}"
+if [ -z "$CHANNEL" ]; then
+  for ch in 1 2 3 4 5 6 7 8 9 10 11; do
+    if ipmitool channel info "$ch" 2>/dev/null | grep -q '802\.3 LAN'; then
+      CHANNEL=$ch
+      break
+    fi
+  done
+fi
+if [ -z "$CHANNEL" ]; then
+  log "no 802.3 LAN channel found on the BMC — disabling"
+  rm -f "$OUT"
+  exec sleep infinity
+fi
+
+log "starting — channel $CHANNEL, mode $MODE, interval ${INTERVAL}s"
+mkdir -p "$TEXTFILE_DIR"
+
+bad=0
+resets=0
+last_reset=0
+cooldown=$COOLDOWN
+
+while true; do
+  # `lan print` key/value lines look like "IP Address Source       : DHCP Address".
+  # Match the trimmed key exactly: "IP Address" is a prefix of "IP Address Source".
+  LAN=$(ipmitool lan print "$CHANNEL" 2>/dev/null || true)
+  SRC=$(printf '%s\n' "$LAN" | awk -F' *: ' '$1=="IP Address Source"{print $2; exit}')
+  IP=$(printf '%s\n' "$LAN" | awk -F' *: ' '$1=="IP Address"{print $2; exit}')
+
+  readable=0; dhcp=0; assigned=0
+  if [ -n "$IP" ]; then
+    readable=1
+    case "$SRC" in DHCP*) dhcp=1 ;; esac
+    [ "$IP" != "0.0.0.0" ] && assigned=1
+  fi
+
+  if [ "$readable" -eq 1 ] && [ "$assigned" -eq 1 ]; then
+    if [ "$bad" -gt 0 ] || [ "$last_reset" -ne 0 ]; then
+      log "BMC has address $IP again"
+    fi
+    bad=0
+    last_reset=0
+    cooldown=$COOLDOWN
+  elif [ "$readable" -eq 1 ]; then
+    bad=$((bad + 1))
+    if [ "$dhcp" -eq 0 ]; then
+      if [ "$bad" -eq 1 ]; then
+        log "BMC is static ($SRC) with IP 0.0.0.0 — misconfigured, not resetting"
+      fi
+    elif [ "$bad" -ge "$BAD_LIMIT" ]; then
+      now=$(date +%s)
+      if [ "$MODE" = "monitor-only" ]; then
+        if [ "$bad" -eq "$BAD_LIMIT" ]; then
+          log "BMC lost its DHCP lease (monitor-only, not resetting)"
+        fi
+      elif [ $((now - last_reset)) -ge "$cooldown" ]; then
+        if [ "$last_reset" -ne 0 ]; then
+          # A previous reset didn't stick — back off before the next one.
+          cooldown=$((cooldown * 2))
+          if [ "$cooldown" -gt "$MAX_COOLDOWN" ]; then
+            cooldown=$MAX_COOLDOWN
+          fi
+        fi
+        log "BMC lost its DHCP lease (IP 0.0.0.0 for $bad checks) — mc reset cold; next attempt no sooner than ${cooldown}s"
+        ipmitool mc reset cold || log "mc reset cold failed"
+        resets=$((resets + 1))
+        last_reset=$now
+      fi
+    fi
+  fi
+  # unreadable (BMC busy or mid-reset): leave state alone, try next cycle.
+
+  {
+    echo '# HELP host_bmc_lan_readable 1 if ipmitool lan print returned the BMC LAN config this cycle.'
+    echo '# TYPE host_bmc_lan_readable gauge'
+    printf 'host_bmc_lan_readable{channel="%s"} %d\n' "$CHANNEL" "$readable"
+    if [ "$readable" -eq 1 ]; then
+      echo '# HELP host_bmc_lan_dhcp 1 if the BMC LAN IP source is DHCP.'
+      echo '# TYPE host_bmc_lan_dhcp gauge'
+      printf 'host_bmc_lan_dhcp{channel="%s"} %d\n' "$CHANNEL" "$dhcp"
+      echo '# HELP host_bmc_lan_ip_assigned 1 if the BMC has a non-zero LAN IP address.'
+      echo '# TYPE host_bmc_lan_ip_assigned gauge'
+      printf 'host_bmc_lan_ip_assigned{channel="%s"} %d\n' "$CHANNEL" "$assigned"
+    fi
+    echo '# HELP host_bmc_lan_resets_total BMC cold resets issued by bmc-lan-watchdog since container start.'
+    echo '# TYPE host_bmc_lan_resets_total counter'
+    printf 'host_bmc_lan_resets_total{channel="%s"} %d\n' "$CHANNEL" "$resets"
+  } > "$TMP"
+  mv "$TMP" "$OUT"
+
+  sleep "$INTERVAL"
+done

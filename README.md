@@ -105,11 +105,14 @@ The container appears in your Prometheus on its first scrape, labeled with `host
 | `nvidia_gpu_exporter`| 9835 | `nvidia-smi` is present             | sleep |
 | `unraid-disks`       | —    | `/host/etc/unraid-version` exists   | sleep |
 | `apt-status`         | —    | host has `/usr/lib/update-notifier/apt-check` (Debian/Ubuntu) | sleep |
+| `bmc-lan-watchdog`   | —    | `/dev/ipmi0` exists AND BMC has an 802.3 LAN channel | sleep |
 | `vmagent`            | 8429 | `PROMETHEUS_REMOTE_WRITE_URL` set   | sleep |
 
 `unraid-disks` emits a textfile metric `unraid_disk_info{device,slot}` mapping Unraid's array slot labels (`disk1`, `parity`, `cache`, ...) to Linux device names by parsing `/var/local/emhttp/disks.ini`. Dashboards join on `(host, device)` to display the slot label instead of the bare `sdX` letter — matches the bay labeling in Unraid's own UI.
 
 `apt-status` runs `chroot /host /usr/lib/update-notifier/apt-check` once an hour and emits `host_apt_updates_pending{type="all"|"security"}` plus `host_reboot_required` (0/1, gated on `/var/run/reboot-required`). Useful when you've disabled `unattended-upgrades` on production hosts and want a "pending updates" panel as your planned-patch-cycle to-do list; the reboot-required flag is the single best post-upgrade safety check.
+
+`bmc-lan-watchdog` reads the BMC's LAN config over `/dev/ipmi0` every 5 min. If the BMC is on DHCP but has had no address (IP `0.0.0.0`) for two consecutive checks, it issues `ipmitool mc reset cold`, which reboots only the BMC (the host OS keeps running), and the BMC then retries DHCP. This covers BMCs that lose their lease and never retry (seen on an R410 iDRAC6 sharing the onboard NIC), which otherwise quietly breaks out-of-band power control. If a reset doesn't get the BMC an address, the wait before the next one doubles from 30 min up to 24 h. A BMC with a static IP of `0.0.0.0` is reported but never reset. It emits `host_bmc_lan_ip_assigned`, `host_bmc_lan_dhcp`, `host_bmc_lan_readable` and `host_bmc_lan_resets_total` (all labelled `channel`).
 
 `node_exporter` reads fan-controller runtime textfiles from `/run/host-agent/state`, so setpoints, temperatures, and adaptive targets appear alongside standard node metrics on `:9100`. The image mounts `/run/host-agent` as a 256 MB tmpfs before s6 starts; this keeps the textfiles and vmagent's unsent queue in RAM even with older Docker templates. Its filesystem collector excludes `/boot` and removable USB mounts while retaining normal capacity metrics for other filesystems.
 
@@ -293,6 +296,13 @@ Optional — GPU runtime:
 | var | default | what |
 |---|---|---|
 | `HOST_AGENT_RUNTIME` | `runc` | set to `nvidia` to inject `nvidia-smi` via NVIDIA Container Runtime |
+
+Optional — BMC LAN watchdog:
+
+| var | default | what |
+|---|---|---|
+| `HOST_AGENT_BMC_WATCHDOG` | `on` | `on` resets a BMC that lost its DHCP lease; `monitor-only` only reports it; `off` disables the service |
+| `BMC_LAN_CHANNEL` | autodetected | IPMI LAN channel to watch (first channel whose medium is 802.3 LAN) |
 
 Optional — adaptive controller intent (v0.2.0+):
 
