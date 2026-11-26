@@ -506,6 +506,9 @@ func install(url string, system bool) error {
 			return fmt.Errorf("--system must be run via sudo from a normal user so the agent runs unprivileged")
 		}
 		dst := "/usr/local/bin/mac-agent"
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
 		if err := copyFile(exe, dst, 0o755); err != nil {
 			return err
 		}
