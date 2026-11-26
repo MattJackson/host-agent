@@ -224,7 +224,54 @@ func (c *collector) collect(now time.Time) []series {
 		}
 	}
 
+	// Temperatures (HID sensors, see sensors_darwin.go).
+	for name, celsius := range readTemperatures() {
+		out = append(out, series{base("node_hwmon_temp_celsius", map[string]string{
+			"chip": "macos_hid", "sensor": sanitizeSensor(name),
+		}), celsius})
+	}
+
+	// Network interface byte counters.
+	if rx, tx, err := netCounters(); err == nil {
+		for dev := range rx {
+			out = append(out,
+				series{base("node_network_receive_bytes_total", map[string]string{"device": dev}), rx[dev]},
+				series{base("node_network_transmit_bytes_total", map[string]string{"device": dev}), tx[dev]},
+			)
+		}
+	}
+
 	return out
+}
+
+// sanitizeSensor turns a HID product name such as "PMU tdie1" into a label
+// value with no spaces, matching the Linux hwmon sensor naming style.
+func sanitizeSensor(s string) string {
+	return strings.ToLower(strings.Join(strings.Fields(s), "_"))
+}
+
+// netCounters parses `netstat -ibn` link rows (one per interface) for
+// cumulative received and transmitted bytes. Loopback is skipped.
+func netCounters() (rx, tx map[string]float64, err error) {
+	out, err := run1("netstat", "-ibn")
+	if err != nil {
+		return nil, nil, err
+	}
+	rx, tx = map[string]float64{}, map[string]float64{}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 10 || !strings.HasPrefix(f[2], "<Link#") || f[0] == "lo0" {
+			continue
+		}
+		in, errIn := strconv.ParseFloat(f[6], 64)
+		outB, errOut := strconv.ParseFloat(f[9], 64)
+		if errIn != nil || errOut != nil {
+			continue
+		}
+		rx[f[0]] = in
+		tx[f[0]] = outB
+	}
+	return rx, tx, nil
 }
 
 func cpuPercent() (user, sys, idle float64, err error) {
