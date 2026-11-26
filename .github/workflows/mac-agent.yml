@@ -10,31 +10,28 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.arch }}
+    name: Build darwin/${{ matrix.arch }}
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        include:
-          - runner: macos-14
-            arch: arm64
-          - runner: macos-14
-            arch: amd64
-            # macos-13 is retired and its jobs never start; build amd64 on
-            # the arm64 image with GOARCH cross-compile (cgo targets darwin SDK).
-    # Native build per arch: the sensor reader is cgo against IOKit.
-    runs-on: ${{ matrix.runner }}
+        arch: [arm64, amd64]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23'
           cache: false  # no go.sum: stdlib-only module
+      # Cross-compiled without cgo, so no temperature sensors in this build.
+      # The cgo sensor reader (sensors_darwin.go) needs a macOS runner.
       - name: Build
         env:
+          GOOS: darwin
           GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '0'
         run: |
           VERSION="$(git rev-parse --short=12 HEAD)"
           mkdir -p dist
-          CGO_ENABLED=1 go build -trimpath -ldflags "-s -w -X main.version=mac-$VERSION" \
+          go build -trimpath -ldflags "-s -w -X main.version=mac-$VERSION" \
             -o "dist/mac-agent-darwin-${GOARCH}" ./cmd/mac-agent
           ls -l dist
       - uses: actions/upload-artifact@v4
