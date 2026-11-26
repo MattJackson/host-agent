@@ -17,6 +17,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23'
+          cache: false  # no go.sum: stdlib-only module
       - name: Build (arm64 + amd64, universal-ready)
         run: |
           VERSION="$(git rev-parse --short=12 HEAD)"

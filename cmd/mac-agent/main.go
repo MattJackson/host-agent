@@ -11,7 +11,8 @@
 //	mac-agent run [--url URL]     run in the foreground
 //	mac-agent install [--url URL] install a per-user LaunchAgent and start it
 //
-// URL defaults to $PROMETHEUS_REMOTE_WRITE_URL, then the docker-1 Prometheus.
+// The remote_write URL comes from --url or $PROMETHEUS_REMOTE_WRITE_URL and is
+// required, matching the Linux host-agent (no built-in endpoint).
 package main
 
 import (
@@ -38,7 +39,6 @@ var version = "mac-0.1.0"
 
 const (
 	label           = "com.pq.host-agent"
-	defaultURL      = "http://docker-1.internal.pq.io:9090/api/v1/write"
 	pushInterval    = 15 * time.Second
 	commandTimeout  = 10 * time.Second
 	defaultLogsPath = "Library/Logs/host-agent.log"
@@ -50,8 +50,12 @@ func main() {
 		os.Exit(2)
 	}
 	fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
-	url := fs.String("url", envOr("PROMETHEUS_REMOTE_WRITE_URL", defaultURL), "Prometheus remote_write URL")
+	url := fs.String("url", os.Getenv("PROMETHEUS_REMOTE_WRITE_URL"), "Prometheus remote_write URL (required)")
 	_ = fs.Parse(os.Args[2:])
+	if *url == "" {
+		fmt.Fprintln(os.Stderr, "mac-agent: set --url or PROMETHEUS_REMOTE_WRITE_URL")
+		os.Exit(2)
+	}
 
 	switch os.Args[1] {
 	case "run":
@@ -66,13 +70,6 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: mac-agent run|install [--url URL]")
 		os.Exit(2)
 	}
-}
-
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }
 
 // run collects and pushes every pushInterval until the process is killed.
