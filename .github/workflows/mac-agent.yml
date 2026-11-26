@@ -16,8 +16,10 @@ jobs:
         include:
           - runner: macos-14
             arch: arm64
-          - runner: macos-13
+          - runner: macos-14
             arch: amd64
+            # macos-13 is retired and its jobs never start; build amd64 on
+            # the arm64 image with GOARCH cross-compile (cgo targets darwin SDK).
     # Native build per arch: the sensor reader is cgo against IOKit.
     runs-on: ${{ matrix.runner }}
     steps:
