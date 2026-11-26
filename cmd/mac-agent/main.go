@@ -125,6 +125,17 @@ type collector struct {
 	ncpu   int
 	last   time.Time
 	cpuSec map[string]float64 // key "cpu|mode" -> cumulative seconds
+	info   map[string]string  // static identity labels, see macosInfo
+}
+
+// chassisFromModel maps an Apple model identifier to laptop or desktop.
+// MacBook* identifiers are laptops; everything else in this agent's scope
+// (Mac mini, Mac Studio, iMac, Mac Pro) is a desktop.
+func chassisFromModel(model string) string {
+	if strings.HasPrefix(model, "MacBook") {
+		return "laptop"
+	}
+	return "desktop"
 }
 
 var (
@@ -142,7 +153,30 @@ func newCollector(host string) *collector {
 			n = v
 		}
 	}
-	return &collector{host: host, ncpu: n, cpuSec: map[string]float64{}}
+	return &collector{host: host, ncpu: n, cpuSec: map[string]float64{}, info: macosInfo()}
+}
+
+// macosInfo reads the identity labels reported on host_agent_info: the real
+// product name and version from sw_vers, the hardware model identifier
+// (e.g. "Mac15,7") and the CPU architecture. Missing values are left empty.
+func macosInfo() map[string]string {
+	info := map[string]string{"arch": runtime.GOARCH}
+	if v, err := run1("sw_vers", "-productName"); err == nil {
+		info["os"] = strings.TrimSpace(v)
+	}
+	if v, err := run1("sw_vers", "-productVersion"); err == nil {
+		info["os_version"] = strings.TrimSpace(v)
+	}
+	if v, err := run1("sw_vers", "-buildVersion"); err == nil {
+		info["os_build"] = strings.TrimSpace(v)
+	}
+	if v, err := run1("sysctl", "-n", "hw.model"); err == nil {
+		info["model"] = strings.TrimSpace(v)
+	}
+	if v, err := run1("sysctl", "-n", "machdep.cpu.brand_string"); err == nil {
+		info["cpu"] = strings.TrimSpace(v)
+	}
+	return info
 }
 
 // collect gathers one scrape worth of series. CPU is reported as cumulative
@@ -160,9 +194,19 @@ func (c *collector) collect(now time.Time) []series {
 	}
 
 	out = append(out, series{base("up", map[string]string{"job": "mac-agent"}), 1})
-	out = append(out, series{base("host_agent_info", map[string]string{
-		"version": version, "chassis": "mac", "profile": "macos",
-	}), 1})
+	// host_agent_info carries the agent build version plus the real macOS
+	// identity. chassis is laptop or desktop from the model prefix; profile
+	// is "macos" to tell it apart from the Linux profiles.
+	infoLabels := map[string]string{
+		"version": version, "profile": "macos",
+		"chassis": chassisFromModel(c.info["model"]),
+	}
+	for _, k := range []string{"os", "os_version", "os_build", "model", "cpu", "arch"} {
+		if v := c.info[k]; v != "" {
+			infoLabels[k] = v
+		}
+	}
+	out = append(out, series{base("host_agent_info", infoLabels), 1})
 
 	// CPU. `top -l 2 -s 1` takes a 1s sample; the second sample is the
 	// instantaneous reading.
