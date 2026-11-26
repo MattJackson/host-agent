@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -514,7 +515,26 @@ func install(url string, system bool) error {
 		}
 		exe = dst
 		plistPath = filepath.Join("/Library/LaunchDaemons", label+".plist")
-		logPath = "/var/log/host-agent.log"
+		// launchd opens the log as the run-as user, so the file must be
+		// writable by that user; /var/log is root-owned, so use /Library/Logs.
+		logPath = "/Library/Logs/host-agent.log"
+		if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+			return err
+		}
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		f.Close()
+		u, err := user.Lookup(runAs)
+		if err != nil {
+			return err
+		}
+		uid, _ := strconv.Atoi(u.Uid)
+		gid, _ := strconv.Atoi(u.Gid)
+		if err := os.Chown(logPath, uid, gid); err != nil {
+			return err
+		}
 	} else {
 		home, err := os.UserHomeDir()
 		if err != nil {
