@@ -51,6 +51,7 @@ func main() {
 	}
 	fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
 	url := fs.String("url", os.Getenv("PROMETHEUS_REMOTE_WRITE_URL"), "Prometheus remote_write URL (required)")
+	system := fs.Bool("system", false, "install: boot-time LaunchDaemon (run with sudo)")
 	_ = fs.Parse(os.Args[2:])
 	if *url == "" {
 		fmt.Fprintln(os.Stderr, "mac-agent: set --url or PROMETHEUS_REMOTE_WRITE_URL")
@@ -63,7 +64,7 @@ func main() {
 			log.Fatal(err)
 		}
 	case "install":
-		if err := install(*url); err != nil {
+		if err := install(*url, *system); err != nil {
 			log.Fatal(err)
 		}
 	default:
@@ -482,22 +483,51 @@ func snappyEncode(src []byte) []byte {
 // install: per-user LaunchAgent (runs at login, restarts on failure)
 // ---------------------------------------------------------------------------
 
-func install(url string) error {
+// install registers the agent to start at boot, so it runs without a login.
+//
+// Default (user): ~/Library/LaunchAgents, runs at login as the current user.
+// --system: /usr/local/bin and /Library/LaunchDaemons, runs at boot as the
+// invoking user (via sudo). Needs root to write the daemon and load it. It
+// does not require a GUI session, which a LaunchAgent does.
+func install(url string, system bool) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
 	exe, _ = filepath.Abs(exe)
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-	plistPath := filepath.Join(home, "Library", "LaunchAgents", label+".plist")
-	logPath := filepath.Join(home, defaultLogsPath)
-	if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
-		return err
+
+	var plistPath, logPath, runAs string
+	if system {
+		if os.Geteuid() != 0 {
+			return fmt.Errorf("--system needs root: run with sudo")
+		}
+		runAs = os.Getenv("SUDO_USER")
+		if runAs == "" || runAs == "root" {
+			return fmt.Errorf("--system must be run via sudo from a normal user so the agent runs unprivileged")
+		}
+		dst := "/usr/local/bin/mac-agent"
+		if err := copyFile(exe, dst, 0o755); err != nil {
+			return err
+		}
+		exe = dst
+		plistPath = filepath.Join("/Library/LaunchDaemons", label+".plist")
+		logPath = "/var/log/host-agent.log"
+	} else {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		plistPath = filepath.Join(home, "Library", "LaunchAgents", label+".plist")
+		logPath = filepath.Join(home, defaultLogsPath)
+		if err := os.MkdirAll(filepath.Dir(plistPath), 0o755); err != nil {
+			return err
+		}
 	}
 
+	userKey := ""
+	if system {
+		userKey = fmt.Sprintf("  <key>UserName</key><string>%s</string>\n", runAs)
+	}
 	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -510,24 +540,37 @@ func install(url string) error {
     <string>--url</string>
     <string>%s</string>
   </array>
-  <key>RunAtLoad</key><true/>
+%s  <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>%s</string>
   <key>StandardErrorPath</key><string>%s</string>
 </dict>
 </plist>
-`, label, exe, url, logPath, logPath)
+`, label, exe, url, userKey, logPath, logPath)
 
 	if err := os.WriteFile(plistPath, []byte(plist), 0o644); err != nil {
 		return err
 	}
 
-	uid := strconv.Itoa(os.Getuid())
-	// Reload if already present; ignore the error when it is not loaded.
-	_ = exec.Command("launchctl", "bootout", "gui/"+uid+"/"+label).Run()
-	if out, err := exec.Command("launchctl", "bootstrap", "gui/"+uid, plistPath).CombinedOutput(); err != nil {
-		return fmt.Errorf("launchctl bootstrap: %v: %s", err, out)
+	domain := "gui/" + strconv.Itoa(os.Getuid())
+	if system {
+		domain = "system"
 	}
-	fmt.Printf("installed %s\nplist: %s\nlog:   %s\npushing to %s\n", label, plistPath, logPath, url)
+	// Reload if already present; ignore the error when it is not loaded.
+	_ = exec.Command("launchctl", "bootout", domain+"/"+label).Run()
+	if out, err := exec.Command("launchctl", "bootstrap", domain, plistPath).CombinedOutput(); err != nil {
+		return fmt.Errorf("launchctl bootstrap %s: %v: %s", domain, err, out)
+	}
+	fmt.Printf("installed %s (%s)\nplist: %s\nlog:   %s\npushing to %s\n",
+		label, map[bool]string{true: "system daemon, runs at boot", false: "user agent, runs at login"}[system],
+		plistPath, logPath, url)
 	return nil
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, mode)
 }
