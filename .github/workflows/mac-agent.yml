@@ -1,0 +1,33 @@
+name: mac-agent binaries
+
+on:
+  push:
+    branches: [mac-agent]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build darwin binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: Build (arm64 + amd64, universal-ready)
+        run: |
+          VERSION="$(git rev-parse --short=12 HEAD)"
+          mkdir -p dist
+          for arch in arm64 amd64; do
+            GOOS=darwin GOARCH=$arch CGO_ENABLED=0 \
+              go build -trimpath -ldflags "-s -w -X main.version=mac-$VERSION" \
+              -o dist/mac-agent-darwin-$arch ./cmd/mac-agent
+          done
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-agent
+          path: dist/
