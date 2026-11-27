@@ -53,11 +53,14 @@ func main() {
 	fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
 	url := fs.String("url", os.Getenv("PROMETHEUS_REMOTE_WRITE_URL"), "Prometheus remote_write URL (required)")
 	system := fs.Bool("system", false, "install: boot-time LaunchDaemon (run with sudo)")
+	viaCurl := fs.Bool("via-curl", false, "send with /usr/bin/curl instead of the agent's own socket (for Macs where this binary has no Local Network access)")
 	_ = fs.Parse(os.Args[2:])
 	if *url == "" {
 		fmt.Fprintln(os.Stderr, "mac-agent: set --url or PROMETHEUS_REMOTE_WRITE_URL")
 		os.Exit(2)
 	}
+
+	sendViaCurl = *viaCurl
 
 	switch os.Args[1] {
 	case "run":
@@ -277,6 +280,17 @@ func (c *collector) collect(now time.Time) []series {
 		}), celsius})
 	}
 
+	// Disk I/O: cumulative counters summed over all block storage drivers.
+	if d, err := diskCounters(); err == nil {
+		dl := map[string]string{"device": "all"}
+		out = append(out,
+			series{base("node_disk_read_bytes_total", dl), d["rb"]},
+			series{base("node_disk_written_bytes_total", dl), d["wb"]},
+			series{base("node_disk_reads_completed_total", dl), d["ro"]},
+			series{base("node_disk_writes_completed_total", dl), d["wo"]},
+		)
+	}
+
 	// Network interface byte counters.
 	if rx, tx, err := netCounters(); err == nil {
 		for dev := range rx {
@@ -294,6 +308,32 @@ func (c *collector) collect(now time.Time) []series {
 // value with no spaces, matching the Linux hwmon sensor naming style.
 func sanitizeSensor(s string) string {
 	return strings.ToLower(strings.Join(strings.Fields(s), "_"))
+}
+
+var storageStatsRe = regexp.MustCompile(`"(Bytes \(Read\)|Bytes \(Write\)|Operations \(Read\)|Operations \(Write\))"=(\d+)`)
+
+// diskCounters sums the cumulative Statistics of every IOBlockStorageDriver
+// (bytes and operations, read and write). Keys: rb, wb, ro, wo.
+func diskCounters() (map[string]float64, error) {
+	out, err := run1("ioreg", "-c", "IOBlockStorageDriver", "-r", "-w0")
+	if err != nil {
+		return nil, err
+	}
+	keys := map[string]string{
+		"Bytes (Read)": "rb", "Bytes (Write)": "wb",
+		"Operations (Read)": "ro", "Operations (Write)": "wo",
+	}
+	sums := map[string]float64{"rb": 0, "wb": 0, "ro": 0, "wo": 0}
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.Contains(line, `"Statistics"`) {
+			continue
+		}
+		for _, m := range storageStatsRe.FindAllStringSubmatch(line, -1) {
+			v, _ := strconv.ParseFloat(m[2], 64)
+			sums[keys[m[1]]] += v
+		}
+	}
+	return sums, nil
 }
 
 // netCounters parses `netstat -ibn` link rows (one per interface) for
@@ -388,6 +428,10 @@ func pushRemoteWrite(client *http.Client, url string, sers []series, ts time.Tim
 	}
 	body := snappyEncode(req)
 
+	if sendViaCurl {
+		return pushViaCurl(url, body)
+	}
+
 	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -402,6 +446,28 @@ func pushRemoteWrite(client *http.Client, url string, sers []series, ts time.Tim
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("remote_write %s: HTTP %d", url, resp.StatusCode)
+	}
+	return nil
+}
+
+// sendViaCurl selects /usr/bin/curl as the sender (set by --via-curl).
+var sendViaCurl bool
+
+// pushViaCurl POSTs the snappy-encoded body with the system curl. Apple-signed
+// tools are not subject to the per-app Local Network prompt that blocks an
+// unapproved binary, so this works on headless Macs.
+func pushViaCurl(url string, body []byte) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/usr/bin/curl", "-sS", "-f", "--max-time", "15",
+		"-X", "POST",
+		"-H", "Content-Type: application/x-protobuf",
+		"-H", "Content-Encoding: snappy",
+		"-H", "X-Prometheus-Remote-Write-Version: 0.1.0",
+		"--data-binary", "@-", url)
+	cmd.Stdin = bytes.NewReader(body)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("curl push: %v: %s", err, bytes.TrimSpace(out))
 	}
 	return nil
 }
@@ -547,6 +613,10 @@ func install(url string, system bool) error {
 		}
 	}
 
+	extraArgs := ""
+	if sendViaCurl {
+		extraArgs = "    <string>--via-curl</string>\n"
+	}
 	userKey := ""
 	if system {
 		userKey = fmt.Sprintf("  <key>UserName</key><string>%s</string>\n", runAs)
@@ -562,14 +632,14 @@ func install(url string, system bool) error {
     <string>run</string>
     <string>--url</string>
     <string>%s</string>
-  </array>
+%s  </array>
 %s  <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>%s</string>
   <key>StandardErrorPath</key><string>%s</string>
 </dict>
 </plist>
-`, label, exe, url, userKey, logPath, logPath)
+`, label, exe, url, extraArgs, userKey, logPath, logPath)
 
 	if err := os.WriteFile(plistPath, []byte(plist), 0o644); err != nil {
 		return err
