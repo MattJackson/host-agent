@@ -131,6 +131,48 @@ type collector struct {
 	last   time.Time
 	cpuSec map[string]float64 // key "cpu|mode" -> cumulative seconds
 	info   map[string]string  // static identity labels, see macosInfo
+	patch  patchStatus        // cached softwareupdate result
+}
+
+// patchStatus mirrors host_apt_updates_pending / host_reboot_required.
+type patchStatus struct {
+	checked  time.Time
+	all      float64
+	security float64
+	reboot   float64
+}
+
+// patchRefresh is how often softwareupdate is queried (it contacts Apple).
+const patchRefresh = time.Hour
+
+// checkPatches runs softwareupdate at most once per patchRefresh.
+func (c *collector) checkPatches(now time.Time) patchStatus {
+	if !c.patch.checked.IsZero() && now.Sub(c.patch.checked) < patchRefresh {
+		return c.patch
+	}
+	c.patch.checked = now
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "softwareupdate", "-l").CombinedOutput()
+	if err != nil {
+		return c.patch
+	}
+	var all, sec, reboot float64
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "* Label:") {
+			continue
+		}
+		all++
+		if strings.Contains(line, "Security") {
+			sec++
+		}
+		if strings.Contains(line, "restart") {
+			reboot = 1
+		}
+	}
+	c.patch.all, c.patch.security, c.patch.reboot = all, sec, reboot
+	return c.patch
 }
 
 // chassisFromModel maps an Apple model identifier to laptop or desktop.
@@ -286,6 +328,15 @@ func (c *collector) collect(now time.Time) []series {
 			"chip": "macos_hid", "sensor": s, "class": class,
 		}), celsius})
 	}
+
+	// Patch state from softwareupdate (cached hourly). Labels match the Linux
+	// host-agent so the patch panels read the same on every host.
+	ps := c.checkPatches(now)
+	out = append(out,
+		series{base("host_apt_updates_pending", map[string]string{"type": "all"}), ps.all},
+		series{base("host_apt_updates_pending", map[string]string{"type": "security"}), ps.security},
+		series{base("host_reboot_required", nil), ps.reboot},
+	)
 
 	// Open file descriptors (node_filefd_allocated analogue).
 	if v, err := run1("sysctl", "-n", "kern.num_files"); err == nil {
