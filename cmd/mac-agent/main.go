@@ -274,10 +274,24 @@ func (c *collector) collect(now time.Time) []series {
 	}
 
 	// Temperatures (HID sensors, see sensors_darwin.go).
+	// class follows the Linux hwmon grouping the dashboard expects: CPU die
+	// sensors (pmu*_tdie*) are "cpu1" (Apple Silicon has one SoC package).
 	for name, celsius := range readTemperatures() {
+		s := sanitizeSensor(name)
+		class := "other"
+		if strings.Contains(s, "_tdie") {
+			class = "cpu1"
+		}
 		out = append(out, series{base("node_hwmon_temp_celsius", map[string]string{
-			"chip": "macos_hid", "sensor": sanitizeSensor(name),
+			"chip": "macos_hid", "sensor": s, "class": class,
 		}), celsius})
+	}
+
+	// Open file descriptors (node_filefd_allocated analogue).
+	if v, err := run1("sysctl", "-n", "kern.num_files"); err == nil {
+		if n, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+			out = append(out, series{base("node_filefd_allocated", nil), n})
+		}
 	}
 
 	// Disk I/O: cumulative counters summed over all block storage drivers.
